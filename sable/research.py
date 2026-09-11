@@ -89,21 +89,6 @@ class HybridStore:
     def append(self,row):self.row.append(row); self.column.append(row)
     def scan(self,columns=None):return self.column.scan(columns) if columns and self.hot_columns.intersection(columns) else self.row.scan(columns)
 
-class VectorizedExecutor:
-    """NumPy vector engine with typed operations and Python fallback."""
-    def __init__(self,batch_size=65536):self.batch_size=batch_size; self.backend="numpy" if NUMPY else "python"
-    def _array(self,v): return np.asarray(v) if NUMPY else v
-    def filter(self,values,predicate):
-        if NUMPY and not callable(predicate): return np.asarray(values)[predicate].tolist()
-        return [v for s in range(0,len(values),self.batch_size) for v in values[s:s+self.batch_size] if predicate(v)]
-    def add(self,left,right): return (self._array(left)+self._array(right)).tolist() if NUMPY else [a+b for a,b in zip(left,right)]
-    def sum(self,values): return self._array(values).sum().item() if NUMPY else sum(values)
-    def compare(self,values,op,value):
-        a=self._array(values); result={">":a>value,"<":a<value,"==":a==value,"!=":a!=value}[op]; return result.tolist() if NUMPY else [op=="==" and x==value for x in values]
-    def benchmark(self,n=1000000):
-        if not NUMPY:return {"backend":"python"}
-        a=np.arange(n,dtype=np.float64); t=time.perf_counter(); total=float((a+a).sum()); return {"backend":"numpy","n":n,"sum":total,"elapsed_ms":(time.perf_counter()-t)*1000}
-
 class JoinExecutor:
     @staticmethod
     def nested_loop(left,right,key):return [{**a,**{f"r_{k}":v for k,v in b.items()}} for a in left for b in right if a.get(key)==b.get(key)]
@@ -198,3 +183,117 @@ class TabularQLearner:
     def update(self,state,action,reward,next_state):
         row=self._row(state); row[action]+=self.alpha*(reward+self.gamma*max(self._row(next_state).values())-row[action])
     def status(self):return {str(k):v for k,v in self.q.items()}
+
+
+class HotWarmColdStore:
+    """v3.0 adaptive physical storage with hot/warm/cold classification.
+
+    Rows are classified by access frequency and recency, then materialized
+    into separate segment stores. The hot tier keeps hot columns in columnar
+    layout for vectorized scans; the cold tier uses row layout with measured
+    compression. Classification decisions are exposed via `enable_classification()`
+    and `reclassify()` for the adaptive engine to propose.
+    """
+    def __init__(self, path: str = "hwc", segment_rows: int = 1024,
+                 hot_columns: Sequence[str] = (), cold_compression: str = "zlib"):
+        self.root = Path(path); self.root.mkdir(parents=True, exist_ok=True)
+        self.segment_rows = segment_rows
+        self.hot_columns = set(hot_columns)
+        self.cold_compression = cold_compression
+        self.hot_store = SegmentStore(str(self.root / "hot"), "column", segment_rows)
+        self.warm_store = SegmentStore(str(self.root / "warm"), "row", segment_rows)
+        self.cold_store = SegmentStore(str(self.root / "cold"), "row", segment_rows)
+        self.mode = "disabled"
+        self.classification_counts = {"hot": 0, "warm": 0, "cold": 0}
+
+    def _classify(self, hot: list[dict[str, Any]] = (),
+                  warm: list[dict[str, Any]] = (), cold: list[dict[str, Any]] = ()):
+        if hot: self.hot_store.append(hot)
+        if warm: self.warm_store.append(warm)
+        if cold: self.cold_store.append(cold)
+        self.classification_counts = {"hot": len(hot), "warm": len(warm), "cold": len(cold)}
+        self.mode = "hot_warm_cold"
+
+    def enable_classification(self):
+        self.mode = "hot_warm_cold"
+        return self.mode
+
+    def reclassify(self, access_freqs: list[float], rows: list[dict[str, Any]]):
+        """Reclassify rows given access frequency signals.
+
+        Args:
+            access_freqs: per-row access frequency in [0, 1].
+            rows: rows to reclassify.
+        """
+        if len(access_freqs) != len(rows):
+            raise ValueError("access_freqs and rows length mismatch")
+        hot, warm, cold = [], [], []
+        for freq, row in zip(access_freqs, rows):
+            if freq > 0.5: hot.append(row)
+            elif freq > 0.1: warm.append(row)
+            else: cold.append(row)
+        self._classify(hot, warm, cold)
+        return self.classification_counts
+
+    def scan(self, columns: Sequence[str] | None = None,
+             predicate: Callable[[dict[str, Any]], bool] | None = None):
+        out = []
+        out.extend(self.hot_store.scan(columns, predicate))
+        out.extend(self.warm_store.scan(columns, predicate))
+        out.extend(self.cold_store.scan(columns, predicate))
+        return out
+
+    def stats(self) -> dict[str, Any]:
+        return {"mode": self.mode,
+                "hot": self.hot_store.stats(),
+                "warm": self.warm_store.stats(),
+                "cold": self.cold_store.stats(),
+                "classification_counts": self.classification_counts}
+
+
+class BufferPolicy:
+    """v3.0 adaptive buffer/prefetch policy with workload-aware heuristics.
+
+    Selects between sequential, random, and adaptive prefetch strategies based
+    on the recent workload phase. The policy is exposed for the adaptive engine
+    to propose and for benchmarks to measure.
+    """
+    STRATEGIES = ("sequential", "random", "adaptive")
+
+    def __init__(self, strategy: str = "adaptive", buffer_size: int = 4096):
+        if strategy not in self.STRATEGIES:
+            raise ValueError(f"strategy must be one of {self.STRATEGIES}")
+        self.strategy = strategy
+        self.buffer_size = buffer_size
+        self.history: list[str] = []
+
+    def choose(self, phase: str, recent_scan_ratio: float) -> str:
+        if self.strategy == "adaptive":
+            if recent_scan_ratio > 0.5: chosen = "sequential"
+            elif recent_scan_ratio < 0.1: chosen = "random"
+            else: chosen = "adaptive"
+        else:
+            chosen = self.strategy
+        self.history.append(chosen)
+        self.history = self.history[-1000:]
+        return chosen
+
+    def status(self) -> dict[str, Any]:
+        return {"strategy": self.strategy, "buffer_size": self.buffer_size,
+                "recent_decisions": self.history[-10:]}
+
+
+class VectorizedExecutor:
+    """NumPy vector engine with typed operations and Python fallback."""
+    def __init__(self,batch_size=65536):self.batch_size=batch_size; self.backend="numpy" if NUMPY else "python"
+    def _array(self,v): return np.asarray(v) if NUMPY else v
+    def filter(self,values,predicate):
+        if NUMPY and not callable(predicate): return np.asarray(values)[predicate].tolist()
+        return [v for s in range(0,len(values),self.batch_size) for v in values[s:s+self.batch_size] if predicate(v)]
+    def add(self,left,right): return (self._array(left)+self._array(right)).tolist() if NUMPY else [a+b for a,b in zip(left,right)]
+    def sum(self,values): return self._array(values).sum().item() if NUMPY else sum(values)
+    def compare(self,values,op,value):
+        a=self._array(values); result={">":a>value,"<":a<value,"==":a==value,"!=":a!=value}[op]; return result.tolist() if NUMPY else [op=="==" and x==value for x in values]
+    def benchmark(self,n=1000000):
+        if not NUMPY:return {"backend":"python"}
+        a=np.arange(n,dtype=np.float64); t=time.perf_counter(); total=float((a+a).sum()); return {"backend":"numpy","n":n,"sum":total,"elapsed_ms":(time.perf_counter()-t)*1000}

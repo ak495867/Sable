@@ -1,0 +1,49 @@
+{
+  "version": 1,
+  "mode": "column",
+  "segment_rows": 1024,
+  "segments": [
+    {
+      "id": 0,
+      "rows": 1,
+      "file": "segment-000000",
+      "sha256": "32393966359595b93b20a956253e62d0c2c70874d6a9ebd54604605e49ef94c2"
+    },
+    {
+      "id": 1,
+      "rows": 1,
+      "file": "segment-000001",
+      "sha256": "32393966359595b93b20a956253e62d0c2c70874d6a9ebd54604605e49ef94c2"
+    },
+    {
+      "id": 2,
+      "rows": 1,
+      "file": "segment-000002",
+      "sha256": "c4985635f78222a7093214e0fecb74a0149c3e1f7b475349261a7e8b9dd99e6e"
+    },
+    {
+      "id": 3,
+      "rows": 1,
+      "file": "segment-000003",
+      "sha256": "c2fecfbe57e89b09089288f6d1fbbe5638246f74b1eefd431dfbd187fb71dde7"
+    },
+    {
+      "id": 4,
+      "rows": 1,
+      "file": "segment-000004",
+      "sha256": "0b67f3a5f4b61ac2098798a5423e2dd2260d777c19cbbe434ff44707d4700c78"
+    },
+    {
+      "id": 5,
+      "rows": 1,
+      "file": "segment-000005",
+      "sha256": "c4985635f78222a7093214e0fecb74a0149c3e1f7b475349261a7e8b9dd99e6e"
+    },
+    {
+      "id": 6,
+      "rows": 1,
+      "file": "segment-000006",
+      "sha256": "32393966359595b93b20a956253e62d0c2c70874d6a9ebd54604605e49ef94c2"
+    }
+  ]
+}
