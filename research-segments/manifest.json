@@ -1,0 +1,37 @@
+{
+  "version": 1,
+  "mode": "column",
+  "segment_rows": 1024,
+  "segments": [
+    {
+      "id": 0,
+      "rows": 1024,
+      "file": "segment-000000",
+      "sha256": "4772e04f0199cfe5f3b2c1fd4ef3d1a4f4d3271712230364a8aa1955210c8a3a"
+    },
+    {
+      "id": 1,
+      "rows": 1024,
+      "file": "segment-000001",
+      "sha256": "d16751d43484b0016b0679895a060472c007670933205b4c9317d0e4733813f3"
+    },
+    {
+      "id": 2,
+      "rows": 1024,
+      "file": "segment-000002",
+      "sha256": "ef29bff0acc77c250d333c451f14ac2d379dcdda8ec96b40a64914d7b20c951b"
+    },
+    {
+      "id": 3,
+      "rows": 1024,
+      "file": "segment-000003",
+      "sha256": "c21b00e82c56e4cb78e5e2902c3d9ebc19dca07f0d87a5e4f0a01b1215b25463"
+    },
+    {
+      "id": 4,
+      "rows": 904,
+      "file": "segment-000004",
+      "sha256": "1ae9c5b2fd123d0b1dfcb627caf866417279a7d382eddd8e5a71b7718da911ed"
+    }
+  ]
+}

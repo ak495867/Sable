@@ -1,0 +1,87 @@
+{
+  "join_timings": {
+    "nested_loop": {
+      "rows": 500,
+      "elapsed_ms": 76.804
+    },
+    "hash": {
+      "rows": 2500,
+      "elapsed_ms": 3.624
+    },
+    "merge": {
+      "rows": 2500,
+      "elapsed_ms": 5.502
+    }
+  },
+  "vector_backend": "numpy",
+  "vector_sum": 9999900000,
+  "vector_elapsed_ms": 30.098,
+  "vector_million_element_run": {
+    "backend": "numpy",
+    "n": 1000000,
+    "sum": 999999000000.0,
+    "elapsed_ms": 5.606585999885283
+  },
+  "compression": {
+    "none": {
+      "bytes": 29778,
+      "roundtrip": true,
+      "elapsed_ms": 0.705
+    },
+    "zlib": {
+      "bytes": 21120,
+      "roundtrip": true,
+      "elapsed_ms": 1.599
+    },
+    "delta": {
+      "bytes": 142,
+      "roundtrip": true,
+      "elapsed_ms": 2.892
+    },
+    "rle": {
+      "bytes": 15504,
+      "roundtrip": true,
+      "elapsed_ms": 76.974
+    }
+  },
+  "shadow": {
+    "baseline": "baseline",
+    "candidate": "candidate",
+    "baseline_us": 1357,
+    "candidate_us": 1995,
+    "winner": "baseline",
+    "rows_equal": true,
+    "repetitions": 3,
+    "speedup": 0.6802005012531328
+  },
+  "durable_segments": {
+    "row": {
+      "mode": "row",
+      "segments": 5,
+      "rows": 5000,
+      "bytes": 103340
+    },
+    "after_column_migration": {
+      "mode": "column",
+      "segments": 5,
+      "rows": 5000,
+      "bytes": 29797
+    }
+  },
+  "bandit": {
+    "hash": {
+      "trials": 7,
+      "mean_reward": 1.0
+    },
+    "merge": {
+      "trials": 3,
+      "mean_reward": 0.5
+    }
+  },
+  "q_learning": {
+    "('join',)": {
+      "hash": 1.3187446675328,
+      "merge": 0.5246660857600001
+    }
+  }
+}

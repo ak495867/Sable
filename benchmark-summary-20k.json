@@ -1,0 +1,83 @@
+{
+  "version": "1.0.0",
+  "epoch": 56,
+  "policy": "heuristic+empirical",
+  "physical": {
+    "layout": "row",
+    "compression": "none",
+    "prefetch": "adaptive",
+    "buffer_policy": "workload-aware"
+  },
+  "workload": {
+    "queries": 5602,
+    "point_lookup_ratio": 0.8925383791503034,
+    "scan_ratio": 0.10710460549803641,
+    "aggregate_ratio": 0.0,
+    "join_ratio": 0.0,
+    "write_ratio": 0.0003570153516601214,
+    "recent_point_lookup_ratio": 0.0,
+    "recent_scan_ratio": 0.99,
+    "phase": "scans",
+    "p50_latency_us": 10.0,
+    "p95_latency_us": 26695.75,
+    "plan_counts": {
+      "write": 2,
+      "point_lookup": 5000,
+      "scan": 600
+    },
+    "plan_p50_us": {
+      "write": 81904.5,
+      "point_lookup": 10.0,
+      "scan": 12601.5
+    },
+    "top_queries": [
+      [
+        "41920db3f159aaf1",
+        5000
+      ],
+      [
+        "e52159eb0e8bdcca",
+        300
+      ],
+      [
+        "0751079145b8b903",
+        300
+      ],
+      [
+        "bulk_put",
+        2
+      ]
+    ]
+  },
+  "proposals": [
+    {
+      "type": "create_index",
+      "reason": "recent point lookup ratio exceeded 60%",
+      "details": {
+        "index": "idx_sable_key",
+        "benefit": "key equality access"
+      },
+      "status": "proposed",
+      "epoch": 1
+    },
+    {
+      "type": "phase_change",
+      "from": "point_lookups",
+      "to": "scans",
+      "status": "observed",
+      "epoch": 50
+    },
+    {
+      "type": "layout",
+      "reason": "recent scan ratio exceeded 70%",
+      "details": {
+        "target": "column",
+        "adaptation_cost": "segment rewrite"
+      },
+      "status": "proposed",
+      "epoch": 51
+    }
+  ],
+  "active_indexes": [],
+  "telemetry_events": 5602
+}
