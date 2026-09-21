@@ -1,8 +1,8 @@
-# SABLE v1.0 — Complete Release Report
+# SABLE v3.1 — Complete Release Report
 
 ## Executive summary
 
-SABLE v1.0 is a single-node adaptive database research engine. It combines a durable SQLite transaction kernel with adaptive planning, workload telemetry, physical-design proposals, durable row/column segments, vectorized execution, physical join algorithms, compression, shadow validation, UCB1 policy selection, and tabular Q-learning.
+SABLE v3.1 is a single-node adaptive database research engine. It combines a durable SQLite transaction kernel with truthful physical-plan telemetry, persisted adaptive state, physical-design proposals, durable row/column segments, vectorized execution, physical join algorithms, compression, shadow validation, UCB1 policy selection, and tabular Q-learning.
 
 The release is designed as an experimental systems platform. It measures decisions, records their outcomes, and exposes the policy state required for reproducible research. It does not claim production parity with SQLite, PostgreSQL, DuckDB, or other established database systems.
 
@@ -132,7 +132,7 @@ python3 benchmarks/analyze_policy_simulation.py \
   --output policy-convergence-analysis.md
 ```
 
-The test suite currently contains nine tests and is dependency-free beyond the runtime packages already used by the project. NumPy is used when installed for vectorized execution; the vector executor retains a Python fallback.
+The test suite includes regression coverage for plan verification, adaptive-state restoration, CLI JSON handling, and segment checksum failures. Install development dependencies with `pip install -e '.[dev]'`. NumPy is used when installed for vectorized execution; the vector executor retains a Python fallback.
 
 ## Public API examples
 
@@ -161,7 +161,7 @@ The policy study also demonstrates an important limitation: a global UCB1 policy
 The release was verified with:
 
 ```text
-9/9 automated tests passed
+27 automated tests passed
 Python compilation passed
 20,000-row telemetry benchmark passed
 Research feature benchmark passed
