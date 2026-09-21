@@ -1,4 +1,6 @@
-import argparse, json, statistics
+import argparse
+import json
+import statistics
 from collections import Counter, defaultdict
 from pathlib import Path
 

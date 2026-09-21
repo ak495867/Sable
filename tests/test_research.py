@@ -1,5 +1,5 @@
-import tempfile, unittest
-from pathlib import Path
+import tempfile
+import unittest
 from sable import (
     RowStore,
     ColumnStore,
