@@ -8,7 +8,12 @@ hot/warm/cold classification and compression selection.
 """
 
 from __future__ import annotations
-import hashlib, json, math, sqlite3, statistics, time
+import hashlib
+import json
+import math
+import sqlite3
+import statistics
+import time
 from contextlib import contextmanager
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
@@ -670,7 +675,6 @@ class AdaptiveEngine:
         return mode
 
     def choose_join_algorithm(self, left_rows, right_rows, key, sorted_inputs=False):
-        candidates = ("nested_loop", "hash", "merge")
         if self.policy_mode == "bandit":
             arm = self.join_bandit.select()
             self.join_bandit.decay()
@@ -908,11 +912,11 @@ class SableDB:
 
         # NEW v3.0: use execution engine for adaptive optimization
         if hasattr(self.adaptive, "execution_engine") and rows:
-            batch_size = self.adaptive.execution_engine.choose_batch_size(
+            self.adaptive.execution_engine.choose_batch_size(
                 len(rows), elapsed, 1.0
             )
-            parallelism = self.adaptive.execution_engine.choose_parallelism(len(rows))
-            memory = self.adaptive.execution_engine.choose_memory(len(rows))
+            self.adaptive.execution_engine.choose_parallelism(len(rows))
+            self.adaptive.execution_engine.choose_memory(len(rows))
 
         # NEW v3.0: update cost model and planner
         if hasattr(self.adaptive, "planner"):

@@ -10,9 +10,10 @@ Provides the four advanced autonomous features requested for v3.0:
 """
 
 from __future__ import annotations
-import math, statistics, time
-from dataclasses import dataclass, field
-from typing import Any, Iterable, Optional
+import math
+import time
+from dataclasses import dataclass
+from typing import Any, Iterable
 
 
 @dataclass
