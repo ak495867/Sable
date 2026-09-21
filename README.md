@@ -2,6 +2,16 @@
 
 > A self-optimizing database engine that adapts its execution and storage strategies to observed workload behavior.
 
+[![Python](https://img.shields.io/badge/python-3.10%2B-3776AB?logo=python&logoColor=white )](https://www.python.org/ )
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg )](LICENSE)
+[![Version](https://img.shields.io/badge/version-3.1.0-blue.svg )](https://github.com/ak495867/Sable/releases )
+[![Tests](https://img.shields.io/badge/tests-27%20passing-brightgreen.svg )](#testing)
+[![SQLite](https://img.shields.io/badge/storage-SQLite-003B57?logo=sqlite&logoColor=white )](https://sqlite.org/ )
+[![Status](https://img.shields.io/badge/status-research%20prototype-orange.svg )](#deliberate-v31-boundaries)
+[![GitHub stars](https://img.shields.io/github/stars/ak495867/Sable?style=social )](https://github.com/ak495867/Sable/stargazers )
+[![GitHub last commit](https://img.shields.io/github/last-commit/ak495867/Sable )](https://github.com/ak495867/Sable/commits/main )
+
+
 SABLE v3.0 is a self-optimizing database engine with autonomous physical design, learned query planning, adaptive execution, and hot/warm/cold storage migration. It uses SQLite as a durable transactional storage kernel and adds the SABLE feedback loop around it: **observe → measure → model → propose → validate/commit → adapt**.
 
 ## What v3.0 includes
