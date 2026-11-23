@@ -51,25 +51,29 @@ class SegmentStore:
 
     def _save_manifest(self):
         tmp = self.meta_path.with_suffix(".tmp")
-        tmp.write_text(
-            json.dumps(
-                {
-                    "version": 1,
-                    "mode": self.mode,
-                    "segment_rows": self.segment_rows,
-                    "segments": self.segments,
-                },
-                indent=2,
-            )
-        )
-        with tmp.open("rb") as handle:
+        payload = json.dumps(
+            {
+                "version": 1,
+                "mode": self.mode,
+                "segment_rows": self.segment_rows,
+                "segments": self.segments,
+            },
+            indent=2,
+        ).encode("utf-8")
+        with open(tmp, "wb") as handle:
+            handle.write(payload)
+            handle.flush()
             os.fsync(handle.fileno())
         os.replace(tmp, self.meta_path)
-        directory = os.open(self.root, os.O_RDONLY)
-        try:
-            os.fsync(directory)
-        finally:
-            os.close(directory)
+        if hasattr(os, "O_DIRECTORY"):
+            try:
+                directory = os.open(self.root, os.O_RDONLY | os.O_DIRECTORY)
+                try:
+                    os.fsync(directory)
+                finally:
+                    os.close(directory)
+            except OSError:
+                pass
 
     def _read_segment(self, seg):
         suffix = ".rows" if self.mode == "row" else ".cols"
@@ -98,8 +102,9 @@ class SegmentStore:
                 suffix = ".cols"
             target = self.root / (filename + suffix)
             tmp = target.with_suffix(target.suffix + ".tmp")
-            tmp.write_bytes(payload)
-            with tmp.open("rb") as handle:
+            with open(tmp, "wb") as handle:
+                handle.write(payload)
+                handle.flush()
                 os.fsync(handle.fileno())
             os.replace(tmp, target)
             self.segments.append(
@@ -644,11 +649,18 @@ class VectorizedExecutor:
         return self._array(values).sum().item() if NUMPY else sum(values)
 
     def compare(self, values, op, value):
-        a = self._array(values)
-        result = {">": a > value, "<": a < value, "==": a == value, "!=": a != value}[
-            op
-        ]
-        return result.tolist() if NUMPY else [op == "==" and x == value for x in values]
+        ops = {
+            ">": lambda x, y: x > y,
+            "<": lambda x, y: x < y,
+            "==": lambda x, y: x == y,
+            "!=": lambda x, y: x != y,
+        }
+        if op not in ops:
+            raise ValueError(f"unsupported operator: {op}")
+        fn = ops[op]
+        if NUMPY:
+            return fn(self._array(values), value).tolist()
+        return [bool(fn(x, value)) for x in values]
 
     def benchmark(self, n=1000000):
         if not NUMPY:

@@ -167,15 +167,15 @@ class AdaptiveStorageManager:
 
 @dataclass
 class CostModel:
-    """Learned cost model for estimating query latency."""
-
     def __init__(self, window: int = 1000):
         self.window = max(1, window)
         self.samples: list[dict[str, Any]] = []
         self.parameters: dict[str, float] = {
             "base": 50.0,
             "per_row": 0.01,
-            "index_bonus": -0.05,
+            "index_penalty": 0.2,
+            "join_multiplier": 3.0,
+            "aggregate_multiplier": 1.5,
         }
 
     def observe(
@@ -214,6 +214,21 @@ class CostModel:
             self.parameters["per_row"] = max(0.001, min(slope, 1.0))
         self.parameters["base"] = max(1.0, sy / n - self.parameters["per_row"] * sx / n)
 
+        indexed = [s for s in self.samples if s.get("index_used")]
+        non_indexed = [s for s in self.samples if not s.get("index_used") and not s.get("join")]
+        if indexed and non_indexed:
+            idx_mean = sum(s["latency_us"] for s in indexed) / len(indexed)
+            non_idx_mean = sum(s["latency_us"] for s in non_indexed) / len(non_indexed)
+            if non_idx_mean > 0:
+                self.parameters["index_penalty"] = max(0.01, min(0.9, round(idx_mean / non_idx_mean, 4)))
+
+        joins = [s for s in self.samples if s.get("join")]
+        if joins and non_indexed:
+            join_mean = sum(s["latency_us"] for s in joins) / len(joins)
+            non_idx_mean = sum(s["latency_us"] for s in non_indexed) / len(non_indexed)
+            if non_idx_mean > 0:
+                self.parameters["join_multiplier"] = max(1.1, min(10.0, round(join_mean / non_idx_mean, 4)))
+
     def estimate(
         self,
         rows_scanned: int,
@@ -223,11 +238,11 @@ class CostModel:
     ) -> float:
         cost = self.parameters["base"] + self.parameters["per_row"] * rows_scanned
         if index_used:
-            cost *= 0.2
+            cost *= self.parameters.get("index_penalty", 0.2)
         if join:
-            cost *= 3.0
+            cost *= self.parameters.get("join_multiplier", 3.0)
         if aggregate:
-            cost *= 1.5
+            cost *= self.parameters.get("aggregate_multiplier", 1.5)
         return max(1.0, cost)
 
     def status(self) -> dict[str, Any]:

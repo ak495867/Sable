@@ -272,6 +272,49 @@ class SableTests(unittest.TestCase):
         finally:
             os.unlink(path)
 
+    def test_index_retirement_lifecycle(self):
+        db = SableDB(":memory:", epoch_size=5)
+        db.bulk_put((f"k{i}", i) for i in range(20))
+        for i in range(40):
+            db.get(f"k{i % 20}")
+        proposal = db.adaptive.approve_proposal()
+        self.assertEqual(proposal["status"], "committed")
+        self.assertIn("idx_sable_key", db.adaptive.status()["active_indexes"])
+        for i in range(85):
+            db.put(f"w{i}", i)
+        db.adaptive.adapt()
+        drop_proposals = [p for p in db.adaptive.proposals if p["type"] == "drop_index"]
+        self.assertTrue(len(drop_proposals) > 0)
+        approved_drop = db.adaptive.approve_proposal()
+        self.assertEqual(approved_drop["type"], "drop_index")
+        self.assertEqual(approved_drop["status"], "committed")
+        self.assertNotIn("idx_sable_key", db.adaptive.status()["active_indexes"])
+        rolled_back = db.rollback_last_adaptation()
+        self.assertEqual(rolled_back["proposal_type"], "drop_index")
+        self.assertIn("idx_sable_key", db.adaptive.status()["active_indexes"])
+        db.close()
+
+    def test_column_extraction_robustness(self):
+        db = SableDB(":memory:")
+        cols1 = db._extract_columns("SELECT id, name, price FROM items WHERE price > 10")
+        self.assertEqual(cols1, ["id", "name", "price"])
+        cols2 = db._extract_columns("SELECT COUNT(*) AS total, AVG(price) AS avg_p FROM items")
+        self.assertEqual(cols2, ["total", "avg_p"])
+        cols3 = db._extract_columns("SELECT u.name, u.age FROM users u")
+        self.assertEqual(cols3, ["name", "age"])
+        db.close()
+
+    def test_cost_model_multivariate_adaptation(self):
+        db = SableDB(":memory:")
+        cm = db.adaptive.cost_model
+        for _ in range(5):
+            cm.observe(1000, 1000, 10000, index_used=False)
+            cm.observe(1000, 1, 1000, index_used=True)
+            cm.observe(1000, 1000, 25000, join=True)
+        self.assertLess(cm.parameters["index_penalty"], 0.2)
+        self.assertGreater(cm.parameters["join_multiplier"], 2.0)
+        db.close()
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -187,6 +187,7 @@ class WorkloadModel:
             sum(p in ("point_lookup", "index_lookup") for p in self.recent) / recent_n
         )
         recent_scan = self.recent.count("scan") / recent_n
+        recent_write = self.recent.count("write") / recent_n
         return {
             "queries": self.total,
             "point_lookup_ratio": self.point / n,
@@ -196,6 +197,7 @@ class WorkloadModel:
             "write_ratio": self.write / n,
             "recent_point_lookup_ratio": recent_point,
             "recent_scan_ratio": recent_scan,
+            "recent_write_ratio": recent_write,
             "phase": self.phase(),
             "p50_latency_us": (
                 statistics.median(self.latencies) if self.latencies else 0
@@ -533,6 +535,13 @@ class AdaptiveEngine:
                 "write ratio exceeded 50%",
                 {"target": "none", "reason": "reduce write amplification"},
             )
+        recent_write = s.get("recent_write_ratio", 0.0)
+        if (s["write_ratio"] > 0.50 or recent_write > 0.50) and "idx_sable_key" in self.indexes and recent_point < 0.25:
+            self._propose_once(
+                "drop_index",
+                "write-dominated workload with low point lookup frequency",
+                {"index": "idx_sable_key", "reason": "eliminate write amplification"},
+            )
         if s["aggregate_ratio"] + s["scan_ratio"] > 0.60:
             self._propose_once(
                 "prefetch", "scan/analytics workload detected", {"target": "sequential"}
@@ -556,7 +565,7 @@ class AdaptiveEngine:
             "timestamp": time.time(),
             **extra,
         }
-        if self.shadow_enabled and typ in ("create_index", "layout"):
+        if self.shadow_enabled and typ in ("create_index", "drop_index", "layout"):
             proposal["shadow_validated"] = self._validate_with_shadow(proposal)
         self.proposals.append(proposal)
 
@@ -590,6 +599,11 @@ class AdaptiveEngine:
                 self.indexes.add("idx_sable_key")
                 benefit = self.estimate_index_benefit("key")
                 p["index_benefit"] = benefit
+            elif p["type"] == "drop_index":
+                idx_name = p["details"].get("index", "idx_sable_key")
+                self.conn.execute(f"DROP INDEX IF EXISTS {idx_name}")
+                self.conn.commit()
+                self.indexes.discard(idx_name)
             elif p["type"] == "layout":
                 self.layout = p["details"]["target"]
             elif p["type"] == "compression":
@@ -601,7 +615,6 @@ class AdaptiveEngine:
             p["status"] = "committed"
             p["committed_at"] = time.time()
             self.plan_cache.clear()
-            # Record the successful commit in the journal
             self._append_journal(p, "committed")
             return p
         except Exception as e:
@@ -636,6 +649,14 @@ class AdaptiveEngine:
                 self.conn.execute("DROP INDEX IF EXISTS idx_sable_key")
                 self.conn.commit()
                 self.indexes.discard("idx_sable_key")
+                p["status"] = "rolled_back"
+            except Exception:
+                pass
+        elif p and p["type"] == "drop_index":
+            try:
+                self.conn.execute("CREATE INDEX IF NOT EXISTS idx_sable_key ON sable_records(key)")
+                self.conn.commit()
+                self.indexes.add("idx_sable_key")
                 p["status"] = "rolled_back"
             except Exception:
                 pass
@@ -812,8 +833,10 @@ class SableDB:
         else:
             self.adaptive.indexes.discard("idx_sable_key")
 
-    def _persist_state(self) -> None:
-        if self.conn.in_transaction:
+    def _persist_state(self, force: bool = False) -> None:
+        if self.conn is None or self.conn.in_transaction:
+            return
+        if not force and self.adaptive.model.total % self.adaptive.epoch_size != 0:
             return
         payload = json.dumps(
             self.adaptive.state_dict(), default=str, separators=(",", ":")
@@ -824,6 +847,29 @@ class SableDB:
             (payload, time.time()),
         )
         self.conn.commit()
+
+    @staticmethod
+    def _extract_columns(sql: str) -> list[str]:
+        low = sql.strip()
+        if not low.lower().startswith("select"):
+            return []
+        import re
+        match = re.search(r"select\s+(.*?)\s+from\b", low, re.IGNORECASE | re.DOTALL)
+        if not match:
+            return []
+        raw_cols = match.group(1).split(",")
+        cols = []
+        for c in raw_cols:
+            c = c.strip()
+            alias_match = re.search(r"\bas\s+([a-zA-Z_]\w*)", c, re.IGNORECASE)
+            if alias_match:
+                cols.append(alias_match.group(1).lower())
+            else:
+                tokens = re.findall(r"[a-zA-Z_]\w*(?:\.[a-zA-Z_]\w*)?", c)
+                filtered = [t.split(".")[-1].lower() for t in tokens if t.lower() not in ("distinct", "count", "sum", "avg", "min", "max")]
+                if filtered:
+                    cols.append(filtered[-1])
+        return cols
 
     def _sqlite_plan(self, sql: str, params: tuple[Any, ...]) -> tuple[str, ...]:
         if not sql.lstrip().lower().startswith(("select", "with", "pragma")):
@@ -844,7 +890,7 @@ class SableDB:
         try:
             yield self
             self.conn.commit()
-            self._persist_state()
+            self._persist_state(force=True)
         except Exception:
             self.conn.rollback()
             raise
@@ -853,10 +899,13 @@ class SableDB:
         params = tuple(params)
         start = time.perf_counter_ns()
         was_in_transaction = self.conn.in_transaction
-
-        # NEW v3.0: use adaptive planner for plan selection
+        operation = sql.lstrip().split(None, 1)[0].lower() if sql.strip() else "query"
         rows_scanned = 0
-        if hasattr(self.adaptive, "planner"):
+        if operation in ("insert", "update", "delete", "replace"):
+            plan = "write"
+            candidates = ("write",)
+            cache_hit = False
+        elif hasattr(self.adaptive, "planner"):
             plan, candidates, cache_hit = self.adaptive.planner.select(
                 sql, params, estimated_rows=rows_scanned, indexes=self.adaptive.indexes
             )
@@ -866,7 +915,6 @@ class SableDB:
         sqlite_plan = self._sqlite_plan(sql, params)
         cur = self.conn.execute(sql, params)
         rows = [dict(r) for r in cur.fetchall()] if cur.description else []
-        operation = sql.lstrip().split(None, 1)[0].lower() if sql.strip() else "query"
         if (
             operation in ("insert", "update", "delete", "create", "drop", "replace")
             and not was_in_transaction
@@ -924,14 +972,8 @@ class SableDB:
                 plan, scanned, elapsed, plan == "index_lookup"
             )
 
-        # NEW v3.0: record access patterns
         if hasattr(self.adaptive, "access_tracker"):
-            # Extract columns from SQL for access tracking
-            columns = []
-            low = sql.lower()
-            if "select" in low:
-                select_part = low.split("from")[0].replace("select", "").strip()
-                columns = [c.strip() for c in select_part.split(",") if c.strip()]
+            columns = self._extract_columns(sql)
             self.adaptive.access_tracker.record(
                 self.adaptive.schema.table_name, columns, operation, access_freq=1.0
             )
@@ -986,17 +1028,19 @@ class SableDB:
 
     def close(self):
         if self.conn is not None:
-            self._persist_state()
+            self._persist_state(force=True)
             self.conn.close()
             self.conn = None
 
     def export_telemetry(self, path: str):
+        self._persist_state(force=True)
         Path(path).write_text(
             "\n".join(json.dumps(asdict(t)) for t in self.adaptive.telemetry)
             + ("\n" if self.adaptive.telemetry else "")
         )
 
     def export_summary(self, path: str):
+        self._persist_state(force=True)
         Path(path).write_text(
             json.dumps(self.adaptive.status(), indent=2, default=str) + "\n"
         )
@@ -1041,4 +1085,6 @@ class SableDB:
         return self.adaptive.classify_storage(rows)
 
     def rollback_last_adaptation(self):
-        return self.adaptive.rollback_last_commit()
+        res = self.adaptive.rollback_last_commit()
+        self._persist_state(force=True)
+        return res
