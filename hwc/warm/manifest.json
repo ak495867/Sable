@@ -44,6 +44,18 @@
       "rows": 1,
       "file": "segment-000006",
       "sha256": "51f0ffcfc0d44d93f7c7b9460528fd04de75073ea9043d6f19f93580f5b352b5"
+    },
+    {
+      "id": 7,
+      "rows": 1,
+      "file": "segment-000007",
+      "sha256": "251574a8ac5f0dab1123b6ec77aaad451dcf7bd5c051470bd18a912ed0c739b1"
+    },
+    {
+      "id": 8,
+      "rows": 1,
+      "file": "segment-000008",
+      "sha256": "51f0ffcfc0d44d93f7c7b9460528fd04de75073ea9043d6f19f93580f5b352b5"
     }
   ]
 }
