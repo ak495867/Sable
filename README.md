@@ -95,9 +95,72 @@ SABLE includes a modern C++20 autonomous engine (`cpp/`) providing the complete 
 
 ### What Is the Native C++ Engine For?
 - **Zero Interpreter & GIL Overhead**: Bypasses the Python Global Interpreter Lock and runtime dynamic typing, achieving **25,000+ operations/sec** with **20 µs p50** and **34 µs p95** latency.
-- **Standalone Single-Binary CLI (`sable`)**: Deployable without needing Python 3.10+ installed or virtual environments configured.
-- **Embedded C/C++, Rust, Go, and Zig Systems**: Directly linkable (`libsable`) into high-performance daemon processes, game engines (Unreal/Unity native plugins), and microsecond-sensitive services.
-- **Resource-Constrained Edge & Robotics**: Ideal for micro-controllers, onboard drone computers, and industrial robotics where memory footprint is strictly budgeted and human intervention is impossible.
+- **SQLite-Compatible REPL & Script Runner**: Operates like `sqlite3.exe` for interactive shells, piped SQL scripts (`sable db < script.sql`), and direct statement execution (`sable db "SELECT ..."`).
+- **Data Rules & Permissions of Data (RBAC)**: Manage users, roles, and table permissions directly in SQL (`CREATE USER`, `GRANT`, `REVOKE`, `AUTH`), with column masking and query restriction rules (`CREATE RULE`).
+- **Autonomous Physical Optimization**: Adaptive indexing, LinUCB join algorithm selection, online cost modeling, and shadow hypothesis testing embedded directly in the binary.
+- **Embedded C/C++, Rust, Go, and Zig Systems**: Directly linkable (`libsable`) into high-performance daemon processes and services.
+
+### SQLite-Compatible CLI & SQL Rules Usage
+
+#### Interactive REPL
+```bash
+sable app.db
+```
+```text
+SABLE Interactive Database Shell (v3.2.0)
+Connected to: app.db
+Enter ".help" for usage hints. Enter SQL statements ending with ';'.
+
+sable [admin]> CREATE TABLE employees (id INT, name TEXT, salary REAL, email TEXT);
+sable [admin]> INSERT INTO employees VALUES (1, 'Alice', 125000.0, 'alice@corp.com');
+sable [admin]> INSERT INTO employees VALUES (2, 'Bob', 95000.0, 'bob@corp.com');
+sable [admin]> SELECT * FROM employees;
+id | name  | salary   | email         
+---+-------+----------+---------------
+1  | Alice | 125000.0 | alice@corp.com
+2  | Bob   | 95000.0  | bob@corp.com  
+(2 rows)
+```
+
+#### Code Rules & Permissions of Data (In SQL)
+```sql
+CREATE USER analyst IDENTIFIED BY 'secret123' ROLE 'analyst';
+GRANT SELECT ON employees TO analyst;
+CREATE RULE mask_sensitive ON employees MASK 'salary, email';
+CREATE RULE no_drop ON employees FORBID 'drop';
+
+AUTH analyst secret123;
+
+SELECT * FROM employees;
+```
+Result under `analyst`:
+```text
+id | name  | salary       | email       
+---+-------+--------------+-------------
+1  | Alice | ***MASKED*** | ***MASKED***
+2  | Bob   | ***MASKED*** | ***MASKED***
+(2 rows)
+```
+If `analyst` attempts mutation or rule violation:
+```text
+sable [analyst]> INSERT INTO employees VALUES (3, 'Eve', 100000.0, 'eve@corp.com');
+Error: Permission denied: user 'analyst' lacks 'INSERT' permission on table 'employees'
+
+sable [analyst]> DROP TABLE employees;
+Error: Data rule violation: rule 'no_drop' triggered by pattern: drop
+```
+
+#### Direct Execution & Piped Scripting
+```bash
+sable -table app.db "SELECT * FROM employees;"
+sable -json app.db "SELECT id, name FROM employees;"
+sable -csv app.db "SELECT * FROM employees;"
+sable -table -timer app.db < migration.sql
+```
+
+#### Output Formatting Flags & Dot-Commands
+- Flags: `-table`, `-column`, `-csv`, `-tabs`, `-json`, `-line`, `-list`, `-header`, `-timer`, `-bail`, `-echo`
+- Dot commands: `.help`, `.tables`, `.schema`, `.indices`, `.dump`, `.mode`, `.headers`, `.timer`, `.read`, `.output`, `.auth`, `.user`, `.grant`, `.revoke`, `.permissions`, `.rule`, `.rules`, `.status`, `.policy`, `.proposals`, `.approve`, `.rollback`, `.bench`, `.archive`, `.export`, `.exit`
 
 ### Building Native C++ From Source
 ```bash

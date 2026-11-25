@@ -47,6 +47,173 @@ inline std::string hash_fingerprint(const std::string& sql) {
     return ss.str();
 }
 
+inline std::vector<std::string> split_statements(const std::string& sql) {
+    std::vector<std::string> stmts;
+    std::string current;
+    bool in_single = false;
+    bool in_double = false;
+    for (size_t i = 0; i < sql.size(); ++i) {
+        char c = sql[i];
+        if (c == '\'' && !in_double) {
+            if (in_single && i + 1 < sql.size() && sql[i + 1] == '\'') {
+                current += c;
+                current += sql[++i];
+                continue;
+            }
+            in_single = !in_single;
+        } else if (c == '"' && !in_single) {
+            in_double = !in_double;
+        } else if (c == ';' && !in_single && !in_double) {
+            size_t start = current.find_first_not_of(" \t\n\r");
+            if (start != std::string::npos) {
+                stmts.push_back(current.substr(start));
+            }
+            current.clear();
+            continue;
+        }
+        current += c;
+    }
+    size_t start = current.find_first_not_of(" \t\n\r");
+    if (start != std::string::npos) {
+        stmts.push_back(current.substr(start));
+    }
+    return stmts;
+}
+
+inline std::pair<std::string, std::string> extract_action_and_table(const std::string& sql) {
+    std::string trimmed = sql;
+    size_t first = trimmed.find_first_not_of(" \t\n\r");
+    if (first != std::string::npos) trimmed = trimmed.substr(first);
+    std::string action = "QUERY";
+    std::string table = "*";
+
+    std::string low = trimmed;
+    std::transform(low.begin(), low.end(), low.begin(), [](unsigned char c) { return std::tolower(c); });
+
+    if (low.rfind("select", 0) == 0) {
+        action = "SELECT";
+        size_t from_pos = low.find(" from ");
+        if (from_pos != std::string::npos) {
+            size_t start = low.find_first_not_of(" \t\n\r", from_pos + 6);
+            if (start != std::string::npos) {
+                size_t end = low.find_first_of(" \t\n\r;,()", start);
+                table = (end != std::string::npos) ? trimmed.substr(start, end - start) : trimmed.substr(start);
+            }
+        }
+    } else if (low.rfind("insert", 0) == 0) {
+        action = "INSERT";
+        size_t into_pos = low.find(" into ");
+        if (into_pos != std::string::npos) {
+            size_t start = low.find_first_not_of(" \t\n\r", into_pos + 6);
+            if (start != std::string::npos) {
+                size_t end = low.find_first_of(" \t\n\r;,()", start);
+                table = (end != std::string::npos) ? trimmed.substr(start, end - start) : trimmed.substr(start);
+            }
+        }
+    } else if (low.rfind("update", 0) == 0) {
+        action = "UPDATE";
+        size_t start = low.find_first_not_of(" \t\n\r", 6);
+        if (start != std::string::npos) {
+            size_t end = low.find_first_of(" \t\n\r;,()", start);
+            table = (end != std::string::npos) ? trimmed.substr(start, end - start) : trimmed.substr(start);
+        }
+    } else if (low.rfind("delete", 0) == 0) {
+        action = "DELETE";
+        size_t from_pos = low.find(" from ");
+        if (from_pos != std::string::npos) {
+            size_t start = low.find_first_not_of(" \t\n\r", from_pos + 6);
+            if (start != std::string::npos) {
+                size_t end = low.find_first_of(" \t\n\r;,()", start);
+                table = (end != std::string::npos) ? trimmed.substr(start, end - start) : trimmed.substr(start);
+            }
+        }
+    } else if (low.rfind("create table", 0) == 0) {
+        action = "ADMIN";
+        size_t start = low.find_first_not_of(" \t\n\r", 12);
+        if (start != std::string::npos) {
+            size_t end = low.find_first_of(" \t\n\r;(,", start);
+            table = (end != std::string::npos) ? trimmed.substr(start, end - start) : trimmed.substr(start);
+        }
+    } else if (low.rfind("drop table", 0) == 0) {
+        action = "ADMIN";
+        size_t start = low.find_first_not_of(" \t\n\r", 10);
+        if (start != std::string::npos) {
+            size_t end = low.find_first_of(" \t\n\r;,", start);
+            table = (end != std::string::npos) ? trimmed.substr(start, end - start) : trimmed.substr(start);
+        }
+    } else if (low.rfind("alter table", 0) == 0) {
+        action = "ADMIN";
+        size_t start = low.find_first_not_of(" \t\n\r", 11);
+        if (start != std::string::npos) {
+            size_t end = low.find_first_of(" \t\n\r;,", start);
+            table = (end != std::string::npos) ? trimmed.substr(start, end - start) : trimmed.substr(start);
+        }
+    } else if (low.rfind("create index", 0) == 0 || low.rfind("drop index", 0) == 0) {
+        action = "ADMIN";
+    } else if (low.rfind("create user", 0) == 0 || low.rfind("drop user", 0) == 0 ||
+               low.rfind("alter user", 0) == 0 || low.rfind("grant", 0) == 0 ||
+               low.rfind("revoke", 0) == 0 || low.rfind("create rule", 0) == 0 ||
+               low.rfind("drop rule", 0) == 0) {
+        action = "SECURITY";
+    } else if (low.rfind("auth", 0) == 0 || low.rfind("login", 0) == 0) {
+        action = "AUTH";
+    } else if (low.rfind("show", 0) == 0 || low.rfind("sable", 0) == 0) {
+        action = "SELECT";
+    }
+    return {action, table};
+}
+
+struct Permission {
+    std::string grantee;
+    std::string target_table;
+    std::string action;
+    bool is_allowed = true;
+};
+
+struct DataRule {
+    std::string rule_name;
+    std::string target_table;
+    std::string rule_type;
+    std::string expression;
+};
+
+struct QueryResult {
+    std::string sql;
+    std::string action;
+    std::string table;
+    std::vector<std::string> column_names;
+    std::vector<Row> rows;
+    int changes = 0;
+    bool is_query = false;
+    std::string error;
+};
+
+class SecurityManager {
+public:
+    sqlite3* db = nullptr;
+    std::string current_user = "admin";
+    std::unordered_map<std::string, std::string> user_roles;
+    std::unordered_map<std::string, std::string> user_passwords;
+    std::vector<Permission> permissions;
+    std::vector<DataRule> rules;
+
+    explicit SecurityManager(sqlite3* db_ptr = nullptr);
+    void init_security_tables();
+    void load_cache();
+    bool create_user(const std::string& username, const std::string& password, const std::string& role = "user");
+    bool alter_user(const std::string& username, const std::string& password);
+    bool drop_user(const std::string& username);
+    bool authenticate(const std::string& username, const std::string& password);
+    bool grant(const std::string& grantee, const std::string& target_table, const std::string& action);
+    bool revoke(const std::string& grantee, const std::string& target_table, const std::string& action);
+    bool check_permission(const std::string& username, const std::string& table, const std::string& action) const;
+    bool add_rule(const std::string& name, const std::string& table, const std::string& type, const std::string& expr);
+    bool drop_rule(const std::string& name);
+    bool check_data_rules(const std::string& table, const std::string& sql, std::string& out_violation) const;
+    void apply_masking(const std::string& table, const std::vector<std::string>& col_names, std::vector<Row>& rows) const;
+    bool handle_custom_command(const std::string& sql, QueryResult& out_result);
+};
+
 struct Telemetry {
     int64_t query_id = 0;
     std::string fingerprint;
@@ -194,6 +361,7 @@ public:
     CostModel cost_model;
     std::unique_ptr<AdaptivePlanner> planner;
     LinUCBBandit join_bandit;
+    SecurityManager security;
 
     explicit SableDB(const std::string& db_path = ":memory:", int epoch_size = 100);
     ~SableDB();
@@ -202,6 +370,8 @@ public:
     std::string get(const std::string& key);
     int bulk_put(const std::vector<std::pair<std::string, std::string>>& items);
     std::vector<Row> execute(const std::string& sql, const std::vector<std::string>& params = {});
+    QueryResult execute_single(const std::string& sql, const std::vector<std::string>& params = {});
+    std::vector<QueryResult> execute_script(const std::string& script);
 
     void record_telemetry(Telemetry t);
     void adapt();
@@ -209,6 +379,17 @@ public:
     bool rollback_last_adaptation();
     void enable_policy(const std::string& policy);
     int archive_cold_records(int limit = 1000);
+
+    bool create_user(const std::string& username, const std::string& password, const std::string& role = "user");
+    bool authenticate(const std::string& username, const std::string& password);
+    bool grant(const std::string& grantee, const std::string& table, const std::string& action);
+    bool revoke(const std::string& grantee, const std::string& table, const std::string& action);
+    bool add_rule(const std::string& name, const std::string& table, const std::string& expr, const std::string& type = "FORBID");
+    bool drop_rule(const std::string& name);
+    std::vector<std::string> list_tables(bool include_internal = false);
+    std::string table_schema(const std::string& table_name);
+    std::vector<std::string> list_indices(const std::string& table_name = "");
+    std::string dump_table(const std::string& table_name);
 
     std::string status_json() const;
     void export_telemetry(const std::string& filepath);

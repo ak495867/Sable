@@ -103,6 +103,127 @@ int main() {
         std::cout << "  test_archive_cold_records passed\n";
     }
 
+    {
+        sable::SableDB db(":memory:");
+        bool ok = db.create_user("alice", "pass123", "analyst");
+        assert(ok);
+        assert(db.authenticate("alice", "pass123"));
+        assert(!db.authenticate("alice", "wrong"));
+
+        db.security.current_user = "admin";
+        db.execute("CREATE TABLE metrics (id INT, score REAL);");
+        db.execute("INSERT INTO metrics VALUES(1, 98.5);");
+
+        db.security.current_user = "alice";
+        bool denied = false;
+        try {
+            db.execute("SELECT * FROM metrics;");
+        } catch (const std::exception& ex) {
+            denied = true;
+        }
+        assert(denied);
+
+        db.security.current_user = "admin";
+        db.grant("alice", "metrics", "SELECT");
+
+        db.security.current_user = "alice";
+        auto rows = db.execute("SELECT * FROM metrics;");
+        assert(rows.size() == 1);
+        assert(rows[0]["score"] == "98.5");
+
+        bool insert_denied = false;
+        try {
+            db.execute("INSERT INTO metrics VALUES(2, 75.0);");
+        } catch (const std::exception& ex) {
+            insert_denied = true;
+        }
+        assert(insert_denied);
+
+        db.security.current_user = "admin";
+        db.revoke("alice", "metrics", "SELECT");
+        db.security.current_user = "alice";
+        bool revoked = false;
+        try {
+            db.execute("SELECT * FROM metrics;");
+        } catch (const std::exception& ex) {
+            revoked = true;
+        }
+        assert(revoked);
+        std::cout << "  test_rbac_permissions passed\n";
+    }
+
+    {
+        sable::SableDB db(":memory:");
+        db.execute("CREATE TABLE products (id INT, title TEXT, price REAL);");
+        db.execute("INSERT INTO products VALUES (101, 'laptop', 1200.0);");
+        db.add_rule("no_drop_products", "products", "drop", "FORBID");
+
+        bool forbid_triggered = false;
+        try {
+            db.execute("DROP TABLE products;");
+        } catch (const std::exception& ex) {
+            forbid_triggered = true;
+        }
+        assert(forbid_triggered);
+
+        db.add_rule("lock_products", "products", "READONLY", "READONLY");
+        bool readonly_triggered = false;
+        try {
+            db.execute("INSERT INTO products VALUES (102, 'phone', 800.0);");
+        } catch (const std::exception& ex) {
+            readonly_triggered = true;
+        }
+        assert(readonly_triggered);
+
+        db.create_user("bob", "secret", "user");
+        db.grant("bob", "products", "SELECT");
+        db.add_rule("mask_price", "products", "price", "MASK");
+
+        db.security.current_user = "bob";
+        auto rows = db.execute("SELECT * FROM products;");
+        assert(!rows.empty());
+        assert(rows[0]["price"] == "***MASKED***");
+        assert(rows[0]["title"] == "laptop");
+        std::cout << "  test_data_rules_and_masking passed\n";
+    }
+
+    {
+        sable::SableDB db(":memory:");
+        std::string script =
+            "CREATE TABLE customers (id INT, name TEXT, email TEXT);\n"
+            "INSERT INTO customers VALUES(1, 'Alice', 'alice@corp.com');\n"
+            "INSERT INTO customers VALUES(2, 'Bob', 'bob@corp.com');\n"
+            "CREATE USER analyst IDENTIFIED BY 'pwd123' ROLE 'analyst';\n"
+            "GRANT SELECT ON customers TO analyst;\n"
+            "CREATE RULE mask_email ON customers MASK 'email';\n"
+            "AUTH analyst pwd123;\n"
+            "SELECT id, name, email FROM customers ORDER BY id ASC;\n";
+
+        auto results = db.execute_script(script);
+        assert(!results.empty());
+        assert(db.security.current_user == "analyst");
+        const auto& last = results.back();
+        assert(last.is_query);
+        assert(last.rows.size() == 2);
+        assert(last.column_names.size() == 3);
+        assert(last.column_names[0] == "id");
+        assert(last.column_names[1] == "name");
+        assert(last.column_names[2] == "email");
+        assert(last.rows[0].at("email") == "***MASKED***");
+        assert(last.rows[1].at("email") == "***MASKED***");
+        std::cout << "  test_sql_script_execution passed\n";
+    }
+
+    {
+        sable::SableDB db(":memory:");
+        auto stmts = sable::split_statements("SELECT 1; INSERT INTO t VALUES('hello; world'); SELECT 'done';");
+        assert(stmts.size() == 3);
+        assert(stmts[0] == "SELECT 1");
+        assert(stmts[1] == "INSERT INTO t VALUES('hello; world')");
+        assert(stmts[2] == "SELECT 'done'");
+        std::cout << "  test_statement_splitter passed\n";
+    }
+
     std::cout << "all sable c++ tests passed successfully!\n";
     return 0;
 }
