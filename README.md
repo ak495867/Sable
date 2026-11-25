@@ -73,7 +73,43 @@ Stress tested on Windows with multi-threaded concurrent workloads and rapid phas
 
 ---
 
-## Quickstart
+## Remote 1-Line Installation
+
+Download and install the native precompiled SABLE binary directly from GitHub releases:
+
+### Windows (PowerShell)
+```powershell
+irm https://raw.githubusercontent.com/ak495867/Sable/main/scripts/install.ps1 | iex
+```
+
+### Linux / macOS (Shell)
+```bash
+curl -fsSL https://raw.githubusercontent.com/ak495867/Sable/main/scripts/install.sh | bash
+```
+
+---
+
+## Native C++ Engine
+
+SABLE includes a modern C++20 autonomous engine (`cpp/`) providing the complete self-optimizing loop with zero interpreter overhead.
+
+### What Is the Native C++ Engine For?
+- **Zero Interpreter & GIL Overhead**: Bypasses the Python Global Interpreter Lock and runtime dynamic typing, achieving **25,000+ operations/sec** with **20 µs p50** and **34 µs p95** latency.
+- **Standalone Single-Binary CLI (`sable`)**: Deployable without needing Python 3.10+ installed or virtual environments configured.
+- **Embedded C/C++, Rust, Go, and Zig Systems**: Directly linkable (`libsable`) into high-performance daemon processes, game engines (Unreal/Unity native plugins), and microsecond-sensitive services.
+- **Resource-Constrained Edge & Robotics**: Ideal for micro-controllers, onboard drone computers, and industrial robotics where memory footprint is strictly budgeted and human intervention is impossible.
+
+### Building Native C++ From Source
+```bash
+cmake -B cpp/build -S cpp -DCMAKE_BUILD_TYPE=Release
+cmake --build cpp/build --config Release
+./cpp/build/test_sable
+./cpp/build/sable bench :memory: 10000
+```
+
+---
+
+## Quickstart (Python API)
 
 ```python
 from sable import SableDB
@@ -96,41 +132,13 @@ print("Engine Status:", db.adaptive.status())
 db.close()
 ```
 
-# Access autonomous components directly
-print(db.access_tracker_status())
-print(db.storage_manager_status())
-print(db.cost_model_status())
-print(db.execution_status())
-print(db.physical_designer_status())
-```
-
-## Quickstart
+## Python CLI Usage
 
 ```bash
-cd Sable
-python3 -m venv .venv
-. .venv/bin/activate
-pip install -e '.[dev]'
-pytest -q
-
 sable demo.db put symbol AAPL
 sable demo.db status
 sable demo.db query 'SELECT key, value FROM sable_records WHERE key = ?' AAPL
 sable demo.db export telemetry.jsonl
-```
-
-Use the Python API:
-
-```python
-from sable import SableDB
-
-db = SableDB("market.db", epoch_size=25)
-db.put("trade:1", {"symbol": "AAPL", "price": 227.10})
-print(db.get("trade:1"))
-print(db.execute("SELECT key, value FROM sable_records WHERE key = ?", ("trade:1",)))
-print(db.adaptive.status())
-# Review and explicitly commit a proposed physical change:
-print(db.adaptive.approve_proposal())
 ```
 
 ## Architecture
