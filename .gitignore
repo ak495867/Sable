@@ -13,3 +13,10 @@ benchmark-summary.json
 benchmark-telemetry.jsonl
 coverage.xml
 htmlcov/
+cpp/build/
+package/
+*.exe
+*.a
+*.zip
+*.tar.gz
+cold_segments.log
