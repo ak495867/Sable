@@ -13,6 +13,22 @@
 
 > 📖 **Complete Documentation**: Looking for how anyone can create, query, and manage databases in SABLE? Read the complete step-by-step **[User Guide (USE.md)](USE.md)**. For contribution standards, see **[CONTRIBUTING.md](CONTRIBUTING.md)**.
 
+## Remote 1-Line Installation
+
+Download and install the native precompiled SABLE binary directly from GitHub releases:
+
+### Windows (PowerShell)
+```powershell
+irm https://raw.githubusercontent.com/ak495867/Sable/main/scripts/install.ps1 | iex
+```
+
+### Linux / macOS (Shell)
+```bash
+curl -fsSL https://raw.githubusercontent.com/ak495867/Sable/main/scripts/install.sh | bash
+```
+
+---
+
 SABLE is a self-optimizing database engine with autonomous physical design, learned query planning, adaptive execution, LinUCB contextual bandits, statistical shadow validation, and hot/warm/cold storage tiering. It couples an ultra-fast SQLite WAL storage kernel with an autonomous closed-loop feedback controller: **observe → measure → model → propose → shadow validate → commit/rollback → adapt**.
 
 ---
@@ -74,22 +90,6 @@ Stress tested on Windows with multi-threaded concurrent workloads and rapid phas
 - **Storage Tier Archiving**: Automatic archival of cold records to chunked segments with transparent query fallback.
 - **Bidirectional Index Lifecycle**: Proposes index creation under read spikes and index retirement under write spikes with rollback tracking.
 - **Full CLI & Telemetry Export**: Real-time inspection, journal auditing, and JSON telemetry dumps.
-
----
-
-## Remote 1-Line Installation
-
-Download and install the native precompiled SABLE binary directly from GitHub releases:
-
-### Windows (PowerShell)
-```powershell
-irm https://raw.githubusercontent.com/ak495867/Sable/main/scripts/install.ps1 | iex
-```
-
-### Linux / macOS (Shell)
-```bash
-curl -fsSL https://raw.githubusercontent.com/ak495867/Sable/main/scripts/install.sh | bash
-```
 
 ---
 
