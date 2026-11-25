@@ -390,6 +390,8 @@ class ShadowResult:
     rows_equal: bool
     repetitions: int = 1
     speedup: float = 1.0
+    significant: bool = False
+    p_value_approx: float = 1.0
 
 
 class ShadowExecutor:
@@ -408,21 +410,108 @@ class ShadowExecutor:
                 t = time.perf_counter_ns()
                 result = fn()
                 vals.append((time.perf_counter_ns() - t) // 1000)
-            return result, sorted(vals)[len(vals) // 2]
+            return result, vals
 
-        a, at = run(baseline)
-        b, bt = run(candidate)
-        winner = candidate_name if bt < at else baseline_name
+        a, a_vals = run(baseline)
+        b, b_vals = run(candidate)
+        at = sorted(a_vals)[len(a_vals) // 2]
+        bt = sorted(b_vals)[len(b_vals) // 2]
+        rows_equal = a == b
+        speedup = at / bt if bt else float("inf")
+        significant = False
+        p_approx = 1.0
+        if len(a_vals) >= 3 and len(b_vals) >= 3:
+            mean_a = sum(a_vals) / len(a_vals)
+            mean_b = sum(b_vals) / len(b_vals)
+            var_a = sum((x - mean_a) ** 2 for x in a_vals) / max(1, len(a_vals) - 1)
+            var_b = sum((x - mean_b) ** 2 for x in b_vals) / max(1, len(b_vals) - 1)
+            se = math.sqrt(var_a / len(a_vals) + var_b / len(b_vals))
+            if se > 0:
+                t_stat = (mean_a - mean_b) / se
+                significant = t_stat > 1.96 and bt < at
+                p_approx = round(math.exp(-0.717 * max(0.0, t_stat) - 0.416 * max(0.0, t_stat) ** 2), 4)
+        winner = candidate_name if (bt < at and rows_equal) else baseline_name
         return ShadowResult(
             baseline_name,
             candidate_name,
             at,
             bt,
             winner,
-            a == b,
+            rows_equal,
             repetitions,
-            (at / bt if bt else float("inf")),
+            speedup,
+            significant,
+            p_approx,
         )
+
+
+class LinUCBBandit:
+    def __init__(self, arms, dim=3, alpha=0.5):
+        self.arms = list(arms)
+        self.dim = dim
+        self.alpha = alpha
+        self.A = {a: [[1.0 if i == j else 0.0 for j in range(dim)] for i in range(dim)] for a in self.arms}
+        self.b = {a: [0.0 for _ in range(dim)] for a in self.arms}
+        self.counts = {a: 0 for a in self.arms}
+        self.rewards = {a: 0.0 for a in self.arms}
+
+    def _inv3(self, m):
+        a, b, c = m[0]
+        d, e, f = m[1]
+        g, h, i = m[2]
+        det = a * (e * i - f * h) - b * (d * i - f * g) + c * (d * h - e * g)
+        if abs(det) < 1e-9:
+            return [[1.0 if r == c else 0.0 for c in range(3)] for r in range(3)]
+        invdet = 1.0 / det
+        return [
+            [(e * i - f * h) * invdet, (c * h - b * i) * invdet, (b * f - c * e) * invdet],
+            [(f * g - d * i) * invdet, (a * i - c * g) * invdet, (c * d - a * f) * invdet],
+            [(d * h - e * g) * invdet, (g * b - a * h) * invdet, (a * e - b * d) * invdet],
+        ]
+
+    def _mat_vec(self, m, v):
+        return [sum(m[r][c] * v[c] for c in range(len(v))) for r in range(len(m))]
+
+    def select(self, context=None):
+        ctx = list(context or [1.0, 0.0, 0.0])[:self.dim]
+        while len(ctx) < self.dim:
+            ctx.append(0.0)
+        best_arm = self.arms[0]
+        best_score = -float("inf")
+        for arm in self.arms:
+            A_inv = self._inv3(self.A[arm])
+            theta = self._mat_vec(A_inv, self.b[arm])
+            mean = sum(theta[i] * ctx[i] for i in range(self.dim))
+            A_inv_x = self._mat_vec(A_inv, ctx)
+            var = sum(ctx[i] * A_inv_x[i] for i in range(self.dim))
+            score = mean + self.alpha * math.sqrt(max(0.0, var))
+            if score > best_score:
+                best_score = score
+                best_arm = arm
+        return best_arm
+
+    def update(self, arm, context, reward):
+        ctx = list(context or [1.0, 0.0, 0.0])[:self.dim]
+        while len(ctx) < self.dim:
+            ctx.append(0.0)
+        self.counts[arm] += 1
+        self.rewards[arm] += reward
+        A = self.A[arm]
+        for r in range(self.dim):
+            for c in range(self.dim):
+                A[r][c] += ctx[r] * ctx[c]
+        b = self.b[arm]
+        for r in range(self.dim):
+            b[r] += reward * ctx[r]
+
+    def status(self):
+        return {
+            a: {
+                "trials": self.counts[a],
+                "mean_reward": (self.rewards[a] / self.counts[a] if self.counts[a] else 0.0),
+            }
+            for a in self.arms
+        }
 
 
 class UCB1Bandit:

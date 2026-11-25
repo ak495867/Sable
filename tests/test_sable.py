@@ -315,6 +315,20 @@ class SableTests(unittest.TestCase):
         self.assertGreater(cm.parameters["join_multiplier"], 2.0)
         db.close()
 
+    def test_cold_tier_archiving_and_retrieval(self):
+        db = SableDB(":memory:")
+        db.put("doc:1", {"title": "Active Doc", "views": 100})
+        db.put("doc:2", {"title": "Old Doc", "views": 1})
+        archived_count = db.archive_cold_records(limit=10)
+        self.assertEqual(archived_count, 2)
+        active_rows = db.execute("SELECT COUNT(*) AS total FROM sable_records")
+        self.assertEqual(active_rows[0]["total"], 0)
+        retrieved = db.get("doc:1")
+        self.assertEqual(retrieved, {"title": "Active Doc", "views": 100})
+        retrieved_old = db.get("doc:2")
+        self.assertEqual(retrieved_old, {"title": "Old Doc", "views": 1})
+        db.close()
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -167,3 +167,26 @@ class ResearchFeatureTests(unittest.TestCase):
         segment.write_bytes(segment.read_bytes() + b"corrupt")
         with self.assertRaises(IOError):
             store.scan()
+
+    def test_linucb_bandit(self):
+        from sable import LinUCBBandit
+        bandit = LinUCBBandit(["arm_a", "arm_b"])
+        ctx = [1.0, 0.5, 0.2]
+        for _ in range(20):
+            arm = bandit.select(ctx)
+            reward = 1.0 if arm == "arm_a" else 0.1
+            bandit.update(arm, ctx, reward)
+        self.assertEqual(bandit.select(ctx), "arm_a")
+        status = bandit.status()
+        self.assertIn("arm_a", status)
+        self.assertIn("arm_b", status)
+
+    def test_shadow_statistical_significance(self):
+        result = ShadowExecutor.compare(
+            lambda: [x for x in range(1000)],
+            lambda: [x for x in range(1000)],
+            repetitions=5,
+        )
+        self.assertTrue(result.rows_equal)
+        self.assertIsInstance(result.significant, bool)
+        self.assertIsInstance(result.p_value_approx, float)

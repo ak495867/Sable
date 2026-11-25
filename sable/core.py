@@ -25,6 +25,7 @@ from .research import (
     ShadowExecutor,
     TabularQLearner,
     UCB1Bandit,
+    LinUCBBandit,
     VectorizedExecutor,
     HotWarmColdStore,
 )
@@ -321,6 +322,7 @@ class AdaptiveEngine:
         self.joins = JoinExecutor
         self.join_bandit = BoundedUCB1Bandit(("nested_loop", "hash", "merge"))
         self.policy_learner = TabularQLearner(("nested_loop", "hash", "merge"))
+        self.join_linucb = LinUCBBandit(("nested_loop", "hash", "merge"))
         self.shadow_enabled = True
         self.policy_mode = "heuristic"
         self.adaptation_journal: list[dict[str, Any]] = []
@@ -329,7 +331,6 @@ class AdaptiveEngine:
         self.compression_candidates: dict[str, dict[str, Any]] = {}
         self.storage_classifier: Optional[HotWarmColdStore] = None
         self._proposal_validation_results: list[dict[str, Any]] = []
-        # v3.0 autonomous subsystems
         self.access_tracker = AccessTracker()
         self.storage_manager = AdaptiveStorageManager()
         self.cost_model = CostModel()
@@ -689,13 +690,16 @@ class AdaptiveEngine:
         )
 
     def enable_policy(self, mode: str):
-        if mode not in ("heuristic", "bandit", "q_learning"):
-            raise ValueError("policy must be heuristic, bandit, or q_learning")
+        if mode not in ("heuristic", "bandit", "q_learning", "linucb"):
+            raise ValueError("policy must be heuristic, bandit, q_learning, or linucb")
         self.policy_mode = mode
         self.plan_cache.clear()
         return mode
 
     def choose_join_algorithm(self, left_rows, right_rows, key, sorted_inputs=False):
+        if self.policy_mode == "linucb":
+            ctx = [1.0, math.log1p(len(left_rows)) / 10.0, math.log1p(len(right_rows)) / 10.0]
+            return self.join_linucb.select(ctx)
         if self.policy_mode == "bandit":
             arm = self.join_bandit.select()
             self.join_bandit.decay()
@@ -706,11 +710,13 @@ class AdaptiveEngine:
             )
         return JoinExecutor.choose(left_rows, right_rows, sorted_inputs)
 
-    def observe_join(self, algorithm: str, elapsed_us: int):
+    def observe_join(self, algorithm: str, elapsed_us: int, left_len: int = 100, right_len: int = 100):
         if algorithm not in ("nested_loop", "hash", "merge"):
             raise ValueError("unknown join algorithm")
         self.join_bandit.update(algorithm, -float(elapsed_us))
         self.policy_learner.update(("join",), algorithm, -float(elapsed_us), ("join",))
+        ctx = [1.0, math.log1p(left_len) / 10.0, math.log1p(right_len) / 10.0]
+        self.join_linucb.update(algorithm, ctx, -float(elapsed_us) / 1000.0)
 
     def profile_compression(self, values):
         return CompressionCodec.profile(values)
@@ -871,6 +877,20 @@ class SableDB:
                     cols.append(filtered[-1])
         return cols
 
+    @staticmethod
+    def _apply_plan_hint(sql: str, plan: str, indexes: set[str]) -> str:
+        low = sql.lower().strip()
+        if not low.startswith("select") or "sable_records" not in low:
+            return sql
+        if "indexed by" in low or "not indexed" in low:
+            return sql
+        import re
+        if plan == "index_lookup" and "idx_sable_key" in indexes and "where" in low and "key" in low:
+            return re.sub(r"\bfrom\s+sable_records\b", "FROM sable_records INDEXED BY idx_sable_key", sql, flags=re.IGNORECASE)
+        if plan == "scan" and "idx_sable_key" in indexes and "where" in low:
+            return re.sub(r"\bfrom\s+sable_records\b", "FROM sable_records NOT INDEXED", sql, flags=re.IGNORECASE)
+        return sql
+
     def _sqlite_plan(self, sql: str, params: tuple[Any, ...]) -> tuple[str, ...]:
         if not sql.lstrip().lower().startswith(("select", "with", "pragma")):
             return ()
@@ -912,8 +932,13 @@ class SableDB:
         else:
             plan, candidates, cache_hit = self.adaptive.choose_plan(sql, params)
 
-        sqlite_plan = self._sqlite_plan(sql, params)
-        cur = self.conn.execute(sql, params)
+        hinted_sql = self._apply_plan_hint(sql, plan, self.adaptive.indexes)
+        sqlite_plan = self._sqlite_plan(hinted_sql, params)
+        try:
+            cur = self.conn.execute(hinted_sql, params)
+        except sqlite3.Error:
+            cur = self.conn.execute(sql, params)
+            sqlite_plan = self._sqlite_plan(sql, params)
         rows = [dict(r) for r in cur.fetchall()] if cur.description else []
         if (
             operation in ("insert", "update", "delete", "create", "drop", "replace")
@@ -923,7 +948,6 @@ class SableDB:
         elapsed = max(1, (time.perf_counter_ns() - start) // 1000)
         self.adaptive._query_id += 1
 
-        # NEW v3.0: record telemetry and update autonomous components
         scanned = max(cur.rowcount if cur.rowcount >= 0 else len(rows), len(rows), 0)
         index_used = any(
             "USING INDEX" in detail.upper()
@@ -1024,7 +1048,34 @@ class SableDB:
         rows = self.execute(
             "SELECT key,value,created_at FROM sable_records WHERE key = ?", (key,)
         )
-        return json.loads(rows[0]["value"]) if rows else None
+        if rows:
+            return json.loads(rows[0]["value"])
+        classifier = self.adaptive.storage_classifier or getattr(
+            self.adaptive.storage_manager, "classifier", None
+        )
+        if classifier is not None and getattr(classifier, "cold_store", None):
+            archived = classifier.cold_store.scan(
+                predicate=lambda r: r.get("key") == key
+            )
+            if archived:
+                val = archived[-1].get("value")
+                return json.loads(val) if isinstance(val, str) else val
+        return None
+
+    def archive_cold_records(self, limit: int = 1000) -> int:
+        rows = self.execute("SELECT id, key, value, created_at FROM sable_records ORDER BY created_at ASC LIMIT ?", (limit,))
+        if not rows:
+            return 0
+        records = [{"id": r["id"], "key": r["key"], "value": r["value"], "created_at": r["created_at"]} for r in rows]
+        self.adaptive.storage_manager.migrate("cold", records)
+        self.adaptive.storage_classifier = self.adaptive.storage_manager.classifier
+        self.adaptive.storage_classifier.enable_classification()
+        ids = [r["id"] for r in rows]
+        placeholders = ",".join("?" for _ in ids)
+        self.conn.execute(f"DELETE FROM sable_records WHERE id IN ({placeholders})", ids)
+        self.conn.commit()
+        self._persist_state(force=True)
+        return len(records)
 
     def close(self):
         if self.conn is not None:
