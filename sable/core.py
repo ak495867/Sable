@@ -373,10 +373,19 @@ class AdaptiveEngine:
         self.execution_engine = AdaptiveExecutionEngine()
         self.physical_designer = AutonomousPhysicalDesigner(auto_apply=False)
 
+    _fp_cache: dict[str, str] = {}
+
     @staticmethod
     def fingerprint(sql: str, params: Iterable[Any] = ()) -> str:
+        fp = AdaptiveEngine._fp_cache.get(sql)
+        if fp is not None:
+            return fp
         normalized = " ".join(sql.lower().split())
-        return hashlib.sha256(normalized.encode()).hexdigest()[:16]
+        fp = hashlib.sha256(normalized.encode()).hexdigest()[:16]
+        if len(AdaptiveEngine._fp_cache) > 2048:
+            AdaptiveEngine._fp_cache.clear()
+        AdaptiveEngine._fp_cache[sql] = fp
+        return fp
 
     def register_schema(self, table: str, columns: list[tuple[str, str]]):
         self.schema = SchemaMetadata(table)
@@ -523,6 +532,8 @@ class AdaptiveEngine:
 
     def record(self, telemetry: Telemetry):
         self.telemetry.append(telemetry)
+        if len(self.telemetry) > 12000:
+            self.telemetry = self.telemetry[-5000:]
         self.model.observe(
             telemetry.fingerprint,
             telemetry.plan,
@@ -543,6 +554,7 @@ class AdaptiveEngine:
                 }
             )
         self._last_phase = phase
+        telemetry.phase = phase
         if self.model.total % self.epoch_size == 0:
             self.adapt()
 
@@ -839,6 +851,7 @@ class AdaptiveEngine:
 
 class SableDB:
     _columns_cache: dict[str, list[str]] = {}
+    _hint_cache: dict[tuple[str, str, bool], str] = {}
 
     def __init__(self, path: str = ":memory:", epoch_size: int = 100):
         self.path = path
@@ -889,7 +902,7 @@ class SableDB:
         if not force and self.adaptive.model.total % self.adaptive.epoch_size != 0:
             return
         payload = json.dumps(
-            self.adaptive.state_dict(max_telemetry=5000 if force else 500),
+            self.adaptive.state_dict(max_telemetry=5000 if force else 100),
             default=str,
             separators=(",", ":"),
         )
@@ -931,21 +944,31 @@ class SableDB:
 
     @staticmethod
     def _apply_plan_hint(sql: str, plan: str, indexes: set[str]) -> str:
+        cache_key = (sql, plan, "idx_sable_key" in indexes)
+        cached = SableDB._hint_cache.get(cache_key)
+        if cached is not None:
+            return cached
         low = sql.lower().strip()
         if not low.startswith("select") or "sable_records" not in low:
-            return sql
-        if "indexed by" in low or "not indexed" in low:
-            return sql
-        import re
-        if plan == "index_lookup" and "idx_sable_key" in indexes and "where" in low and "key" in low:
-            return re.sub(r"\bfrom\s+sable_records\b", "FROM sable_records INDEXED BY idx_sable_key", sql, flags=re.IGNORECASE)
-        if plan == "scan" and "idx_sable_key" in indexes and "where" in low:
-            return re.sub(r"\bfrom\s+sable_records\b", "FROM sable_records NOT INDEXED", sql, flags=re.IGNORECASE)
-        return sql
+            res = sql
+        elif "indexed by" in low or "not indexed" in low:
+            res = sql
+        else:
+            import re
+            if plan == "index_lookup" and "idx_sable_key" in indexes and "where" in low and "key" in low:
+                res = re.sub(r"\bfrom\s+sable_records\b", "FROM sable_records INDEXED BY idx_sable_key", sql, flags=re.IGNORECASE)
+            elif plan == "scan" and "idx_sable_key" in indexes and "where" in low:
+                res = re.sub(r"\bfrom\s+sable_records\b", "FROM sable_records NOT INDEXED", sql, flags=re.IGNORECASE)
+            else:
+                res = sql
+        if len(SableDB._hint_cache) > 2048:
+            SableDB._hint_cache.clear()
+        SableDB._hint_cache[cache_key] = res
+        return res
 
-    def _sqlite_plan(self, sql: str, params: tuple[Any, ...]) -> tuple[str, ...]:
+    def _sqlite_plan(self, sql: str, params: tuple[Any, ...]) -> tuple[tuple[str, ...], bool, str]:
         if not sql.lstrip().lower().startswith(("select", "with", "pragma")):
-            return ()
+            return (), False, ""
         cache_key = (sql, frozenset(self.adaptive.indexes))
         cached = self._plan_cache.get(cache_key)
         if cached is not None:
@@ -957,12 +980,23 @@ class SableDB:
                     "EXPLAIN QUERY PLAN " + sql, params
                 ).fetchall()
             )
+            is_idx = any(
+                "USING INDEX" in detail.upper()
+                or "USING INTEGER PRIMARY KEY" in detail.upper()
+                for detail in plan
+            )
+            idx_name = (
+                "idx_sable_key"
+                if is_idx and "idx_sable_key" in " ".join(plan)
+                else ""
+            )
+            entry = (plan, is_idx, idx_name)
             if len(self._plan_cache) > 2048:
                 self._plan_cache.clear()
-            self._plan_cache[cache_key] = plan
-            return plan
+            self._plan_cache[cache_key] = entry
+            return entry
         except sqlite3.Error:
-            return ()
+            return (), False, ""
 
     @contextmanager
     def transaction(self) -> Iterator["SableDB"]:
@@ -993,12 +1027,12 @@ class SableDB:
             plan, candidates, cache_hit = self.adaptive.choose_plan(sql, params)
 
         hinted_sql = self._apply_plan_hint(sql, plan, self.adaptive.indexes)
-        sqlite_plan = self._sqlite_plan(hinted_sql, params)
+        sqlite_plan, index_used, index_name = self._sqlite_plan(hinted_sql, params)
         try:
             cur = self.conn.execute(hinted_sql, params)
         except sqlite3.Error:
             cur = self.conn.execute(sql, params)
-            sqlite_plan = self._sqlite_plan(sql, params)
+            sqlite_plan, index_used, index_name = self._sqlite_plan(sql, params)
         rows = [dict(r) for r in cur.fetchall()] if cur.description else []
         if (
             operation in ("insert", "update", "delete", "create", "drop", "replace")
@@ -1008,22 +1042,18 @@ class SableDB:
         elapsed = max(1, (time.perf_counter_ns() - start) // 1000)
         self.adaptive._query_id += 1
 
+        fp = self.adaptive.fingerprint(sql, params)
         scanned = max(cur.rowcount if cur.rowcount >= 0 else len(rows), len(rows), 0)
-        index_used = any(
-            "USING INDEX" in detail.upper()
-            or "USING INTEGER PRIMARY KEY" in detail.upper()
-            for detail in sqlite_plan
-        )
         self.adaptive.record(
             Telemetry(
                 self.adaptive._query_id,
-                self.adaptive.fingerprint(sql, params),
+                fp,
                 plan,
                 scanned,
                 len(rows),
                 elapsed,
                 index_used,
-                self.adaptive.model.phase(),
+                self.adaptive._last_phase,
                 self.adaptive.epoch,
                 operation,
                 cache_hit,
@@ -1034,15 +1064,10 @@ class SableDB:
                 0,
                 plan,
                 sqlite_plan,
-                (
-                    "idx_sable_key"
-                    if index_used and "idx_sable_key" in " ".join(sqlite_plan)
-                    else ""
-                ),
+                index_name,
             )
         )
 
-        # NEW v3.0: use execution engine for adaptive optimization
         if hasattr(self.adaptive, "execution_engine") and rows:
             self.adaptive.execution_engine.choose_batch_size(
                 len(rows), elapsed, 1.0
@@ -1050,7 +1075,6 @@ class SableDB:
             self.adaptive.execution_engine.choose_parallelism(len(rows))
             self.adaptive.execution_engine.choose_memory(len(rows))
 
-        # NEW v3.0: update cost model and planner
         if hasattr(self.adaptive, "planner"):
             self.adaptive.planner.observe(
                 plan, scanned, elapsed, plan == "index_lookup"

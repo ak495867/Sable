@@ -48,7 +48,7 @@ class AccessTracker:
             self.table_access[table] = ta[-self.window :]
         for col in columns:
             ca = self.column_access.setdefault(col, [])
-            ca.append(dict(entry, column=col))
+            ca.append({"table": table, "column": col, "operation": operation, "access_freq": access_freq, "timestamp": ts})
             if len(ca) > self.window + 200:
                 self.column_access[col] = ca[-self.window :]
         if access_freq > 0.5:
@@ -175,6 +175,7 @@ class CostModel:
         self.window = max(1, window)
         self.samples: list[dict[str, Any]] = []
         self._dirty = 0
+        self.version = 0
         self.parameters: dict[str, float] = {
             "base": 50.0,
             "per_row": 0.01,
@@ -202,10 +203,10 @@ class CostModel:
                 "aggregate": aggregate,
             }
         )
-        if len(self.samples) > self.window:
+        if len(self.samples) > self.window + 200:
             self.samples = self.samples[-self.window :]
         self._dirty += 1
-        if self._dirty >= 50 or len(self.samples) <= 20:
+        if self._dirty >= 100 or len(self.samples) <= 20:
             self._fit()
             self._dirty = 0
 
@@ -213,30 +214,46 @@ class CostModel:
         if len(self.samples) < 3:
             return
         n = len(self.samples)
-        sx = sum(s["rows_scanned"] for s in self.samples)
-        sy = sum(s["latency_us"] for s in self.samples)
-        sxx = sum(s["rows_scanned"] ** 2 for s in self.samples)
-        sxy = sum(s["rows_scanned"] * s["latency_us"] for s in self.samples)
+        sx = 0.0
+        sy = 0.0
+        sxx = 0.0
+        sxy = 0.0
+        idx_sum = 0.0
+        idx_cnt = 0
+        non_idx_sum = 0.0
+        non_idx_cnt = 0
+        join_sum = 0.0
+        join_cnt = 0
+        for s in self.samples:
+            rx = s["rows_scanned"]
+            ly = s["latency_us"]
+            sx += rx
+            sy += ly
+            sxx += rx * rx
+            sxy += rx * ly
+            if s.get("index_used"):
+                idx_sum += ly
+                idx_cnt += 1
+            elif not s.get("join"):
+                non_idx_sum += ly
+                non_idx_cnt += 1
+            if s.get("join"):
+                join_sum += ly
+                join_cnt += 1
         denom = n * sxx - sx * sx
         if denom != 0:
             slope = (n * sxy - sx * sy) / denom
             self.parameters["per_row"] = max(0.001, min(slope, 1.0))
         self.parameters["base"] = max(1.0, sy / n - self.parameters["per_row"] * sx / n)
-
-        indexed = [s for s in self.samples if s.get("index_used")]
-        non_indexed = [s for s in self.samples if not s.get("index_used") and not s.get("join")]
-        if indexed and non_indexed:
-            idx_mean = sum(s["latency_us"] for s in indexed) / len(indexed)
-            non_idx_mean = sum(s["latency_us"] for s in non_indexed) / len(non_indexed)
+        if idx_cnt > 0 and non_idx_cnt > 0:
+            non_idx_mean = non_idx_sum / non_idx_cnt
             if non_idx_mean > 0:
-                self.parameters["index_penalty"] = max(0.01, min(0.9, round(idx_mean / non_idx_mean, 4)))
-
-        joins = [s for s in self.samples if s.get("join")]
-        if joins and non_indexed:
-            join_mean = sum(s["latency_us"] for s in joins) / len(joins)
-            non_idx_mean = sum(s["latency_us"] for s in non_indexed) / len(non_indexed)
+                self.parameters["index_penalty"] = max(0.01, min(0.9, round((idx_sum / idx_cnt) / non_idx_mean, 4)))
+        if join_cnt > 0 and non_idx_cnt > 0:
+            non_idx_mean = non_idx_sum / non_idx_cnt
             if non_idx_mean > 0:
-                self.parameters["join_multiplier"] = max(1.1, min(10.0, round(join_mean / non_idx_mean, 4)))
+                self.parameters["join_multiplier"] = max(1.1, min(10.0, round((join_sum / join_cnt) / non_idx_mean, 4)))
+        self.version += 1
 
     def estimate(
         self,
@@ -269,6 +286,8 @@ class AdaptivePlanner:
         self.cost_model = cost_model or CostModel()
         self.candidate_plans: dict[str, list[str]] = {}
         self.last_plan = "scan"
+        self._plan_cache: dict[tuple[str, frozenset[str]], tuple[str, tuple[str, ...], bool]] = {}
+        self._fit_version = -1
 
     def select(
         self,
@@ -278,6 +297,15 @@ class AdaptivePlanner:
         indexes: Iterable[str] = (),
         candidates: Iterable[str] = ("scan",),
     ):
+        cm_ver = getattr(self.cost_model, "version", 0)
+        if cm_ver != self._fit_version:
+            self._plan_cache.clear()
+            self._fit_version = cm_ver
+        cache_key = (sql, frozenset(indexes))
+        cached = self._plan_cache.get(cache_key)
+        if cached is not None:
+            self.last_plan = cached[0]
+            return cached
         low = sql.lower()
         has_join = " join " in low
         has_aggregate = any(
@@ -290,10 +318,6 @@ class AdaptivePlanner:
         elif has_aggregate:
             plans = ["aggregate", "scan"]
         elif has_where:
-            # A logical index plan is only a valid candidate when the caller
-            # reports a matching physical index. SQLite may still use its
-            # primary/unique-key indexes; those are verified separately by
-            # SableDB.execute().
             available = set(indexes)
             plans = ["point_lookup", "scan"]
             if "idx_sable_key" in available:
@@ -320,7 +344,11 @@ class AdaptivePlanner:
                 cost = self.cost_model.estimate(estimated_rows)
             scored.append((cost, plan))
         self.last_plan = min(scored)[1]
-        return self.last_plan, tuple(plans), False
+        res = (self.last_plan, tuple(plans), True)
+        if len(self._plan_cache) > 1024:
+            self._plan_cache.clear()
+        self._plan_cache[cache_key] = res
+        return (self.last_plan, tuple(plans), False)
 
     def observe(
         self,
@@ -366,7 +394,8 @@ class AdaptiveExecutionEngine:
         self.history.append(
             {"batch_size": self.batch_size, "rows": rows, "latency_us": latency_us}
         )
-        self.history = self.history[-1000:]
+        if len(self.history) > 1200:
+            self.history = self.history[-1000:]
         return self.batch_size
 
     def choose_parallelism(self, rows: int, cores: int | None = None) -> int:
