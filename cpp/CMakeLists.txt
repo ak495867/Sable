@@ -30,6 +30,21 @@ target_link_libraries(libsable PUBLIC
     ${SQLITE3_TARGET}
 )
 
+add_library(sable_shared SHARED
+    src/sable.cpp
+    src/c_api.cpp
+)
+target_include_directories(sable_shared PUBLIC
+    include
+)
+target_link_libraries(sable_shared PUBLIC
+    ${SQLITE3_TARGET}
+)
+target_link_options(sable_shared PRIVATE
+    -static
+)
+set_target_properties(sable_shared PROPERTIES OUTPUT_NAME "sable")
+
 add_executable(sable
     src/main.cpp
 )
