@@ -1,13 +1,17 @@
-# SABLE v3.2
+# SABLE v4.0
 
 > A self-optimizing, autonomous embedded database engine that adapts its physical design, query planning, and storage tiering to live workload behavior.
 
+[![User Guide](https://img.shields.io/badge/User%20Guide-USE.md-orange.svg)](USE.md)
+[![Contributing](https://img.shields.io/badge/contributing-guidelines-lightgrey.svg)](CONTRIBUTING.md)
 [![Python](https://img.shields.io/badge/python-3.10%2B-3776AB?logo=python&logoColor=white)](https://www.python.org/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
-[![Version](https://img.shields.io/badge/version-3.2.0-blue.svg)](https://github.com/ak495867/Sable/releases)
+[![Version](https://img.shields.io/badge/version-4.0.0-blue.svg)](https://github.com/ak495867/Sable/releases)
 [![Tests](https://img.shields.io/badge/tests-33%20passing-brightgreen.svg)](#testing)
 [![SQLite](https://img.shields.io/badge/storage-SQLite%20WAL-003B57?logo=sqlite&logoColor=white)](https://sqlite.org/)
 [![Status](https://img.shields.io/badge/status-production%20ready-green.svg)](#where-sable-is-perfectly-used)
+
+> 📖 **Complete Documentation**: Looking for how anyone can create, query, and manage databases in SABLE? Read the complete step-by-step **[User Guide (USE.md)](USE.md)**. For contribution standards, see **[CONTRIBUTING.md](CONTRIBUTING.md)**.
 
 SABLE is a self-optimizing database engine with autonomous physical design, learned query planning, adaptive execution, LinUCB contextual bandits, statistical shadow validation, and hot/warm/cold storage tiering. It couples an ultra-fast SQLite WAL storage kernel with an autonomous closed-loop feedback controller: **observe → measure → model → propose → shadow validate → commit/rollback → adapt**.
 
@@ -107,7 +111,7 @@ SABLE includes a modern C++20 autonomous engine (`cpp/`) providing the complete 
 sable app.db
 ```
 ```text
-SABLE Interactive Database Shell (v3.2.0)
+SABLE Interactive Database Shell (v4.0.0)
 Connected to: app.db
 Enter ".help" for usage hints. Enter SQL statements ending with ';'.
 

@@ -239,7 +239,7 @@ static bool run_statement_batch(sable::SableDB& db, const std::string& sql, Shel
 }
 
 static void run_repl(sable::SableDB& db, const std::string& db_path, ShellConfig& cfg) {
-    std::cout << "SABLE Interactive Database Shell (v3.2.0)\n"
+    std::cout << "SABLE Interactive Database Shell (v4.0.0)\n"
               << "Connected to: " << db_path << "\n"
               << "Enter \".help\" for usage hints. Enter SQL statements ending with ';'.\n";
 
@@ -531,11 +531,11 @@ int main(int argc, char* argv[]) {
     for (int i = 1; i < argc; ++i) {
         std::string a = argv[i];
         if (a == "--version" || a == "-v") {
-            std::cout << "sable version 3.2.0 (cpp native release)\n";
+            std::cout << "sable version 4.0.0 (cpp native release)\n";
             return 0;
         }
         if (a == "--help" || a == "-h") {
-            std::cout << "SABLE v3.2 Autonomous Database Engine (SQLite-Compatible)\n"
+            std::cout << "SABLE v4.0 Autonomous Database Engine (SQLite-Compatible)\n"
                       << "Usage: sable [options] [db_file] [sql_statement]\n\n"
                       << "Options:\n"
                       << "  -header / -noheader        Enable or disable column headers\n"
