@@ -42,11 +42,15 @@ class AccessTracker:
             "access_freq": access_freq,
             "timestamp": ts,
         }
-        self.table_access.setdefault(table, []).append(entry)
-        self.table_access[table] = self.table_access[table][-self.window :]
+        ta = self.table_access.setdefault(table, [])
+        ta.append(entry)
+        if len(ta) > self.window + 200:
+            self.table_access[table] = ta[-self.window :]
         for col in columns:
-            self.column_access.setdefault(col, []).append(dict(entry, column=col))
-            self.column_access[col] = self.column_access[col][-self.window :]
+            ca = self.column_access.setdefault(col, [])
+            ca.append(dict(entry, column=col))
+            if len(ca) > self.window + 200:
+                self.column_access[col] = ca[-self.window :]
         if access_freq > 0.5:
             self.tier_counts["hot"] += 1
         elif access_freq > 0.1:
@@ -170,6 +174,7 @@ class CostModel:
     def __init__(self, window: int = 1000):
         self.window = max(1, window)
         self.samples: list[dict[str, Any]] = []
+        self._dirty = 0
         self.parameters: dict[str, float] = {
             "base": 50.0,
             "per_row": 0.01,
@@ -197,8 +202,12 @@ class CostModel:
                 "aggregate": aggregate,
             }
         )
-        self.samples = self.samples[-self.window :]
-        self._fit()
+        if len(self.samples) > self.window:
+            self.samples = self.samples[-self.window :]
+        self._dirty += 1
+        if self._dirty >= 50 or len(self.samples) <= 20:
+            self._fit()
+            self._dirty = 0
 
     def _fit(self):
         if len(self.samples) < 3:
@@ -246,6 +255,9 @@ class CostModel:
         return max(1.0, cost)
 
     def status(self) -> dict[str, Any]:
+        if self._dirty > 0:
+            self._fit()
+            self._dirty = 0
         return {"samples": len(self.samples), "parameters": self.parameters}
 
 

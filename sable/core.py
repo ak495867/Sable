@@ -61,6 +61,29 @@ class Telemetry:
     sqlite_plan: tuple[str, ...] = ()
     index_name: str = ""
 
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "query_id": self.query_id,
+            "fingerprint": self.fingerprint,
+            "plan": self.plan,
+            "rows_scanned": self.rows_scanned,
+            "rows_returned": self.rows_returned,
+            "latency_us": self.latency_us,
+            "index_used": self.index_used,
+            "phase": self.phase,
+            "adaptation_epoch": self.adaptation_epoch,
+            "operation": self.operation,
+            "cache_hit": self.cache_hit,
+            "bytes_read": self.bytes_read,
+            "bytes_written": self.bytes_written,
+            "cpu_time_us": self.cpu_time_us,
+            "candidate_plans": list(self.candidate_plans),
+            "rows_returned_exact": self.rows_returned_exact,
+            "logical_plan": self.logical_plan,
+            "sqlite_plan": list(self.sqlite_plan),
+            "index_name": self.index_name,
+        }
+
 
 @dataclass
 class ColumnStat:
@@ -134,6 +157,7 @@ class WorkloadModel:
         self.write = 0
         self.latencies: list[float] = []
         self.recent: list[str] = []
+        self.recent_counts: dict[str, int] = {}
         self.fingerprints: dict[str, int] = {}
         self.plan_counts: dict[str, int] = {}
         self.plan_latency: dict[str, list[int]] = {}
@@ -150,13 +174,23 @@ class WorkloadModel:
     ):
         self.total += 1
         self.latencies.append(latency_us)
-        self.latencies = self.latencies[-10000:]
+        if len(self.latencies) > 12000:
+            self.latencies = self.latencies[-10000:]
+        if len(self.recent) >= self.window:
+            old = self.recent.pop(0)
+            cnt = self.recent_counts.get(old, 1) - 1
+            if cnt <= 0:
+                self.recent_counts.pop(old, None)
+            else:
+                self.recent_counts[old] = cnt
         self.recent.append(plan)
-        self.recent = self.recent[-self.window :]
+        self.recent_counts[plan] = self.recent_counts.get(plan, 0) + 1
         self.fingerprints[fp] = self.fingerprints.get(fp, 0) + 1
         self.plan_counts[plan] = self.plan_counts.get(plan, 0) + 1
-        self.plan_latency.setdefault(plan, []).append(latency_us)
-        self.plan_latency[plan] = self.plan_latency[plan][-1000:]
+        pl = self.plan_latency.setdefault(plan, [])
+        pl.append(latency_us)
+        if len(pl) > 1200:
+            self.plan_latency[plan] = pl[-1000:]
         if plan in ("index_lookup", "point_lookup"):
             self.point += 1
         if plan == "scan":
@@ -169,10 +203,9 @@ class WorkloadModel:
             self.write += 1
 
     def phase(self) -> str:
-        if not self.recent:
+        if not self.recent_counts:
             return "startup"
-        counts = {p: self.recent.count(p) for p in set(self.recent)}
-        dominant = max(counts, key=counts.get)
+        dominant = max(self.recent_counts, key=self.recent_counts.get)
         return {
             "point_lookup": "point_lookups",
             "index_lookup": "point_lookups",
@@ -185,10 +218,10 @@ class WorkloadModel:
         n = max(self.total, 1)
         recent_n = max(len(self.recent), 1)
         recent_point = (
-            sum(p in ("point_lookup", "index_lookup") for p in self.recent) / recent_n
-        )
-        recent_scan = self.recent.count("scan") / recent_n
-        recent_write = self.recent.count("write") / recent_n
+            self.recent_counts.get("point_lookup", 0) + self.recent_counts.get("index_lookup", 0)
+        ) / recent_n
+        recent_scan = self.recent_counts.get("scan", 0) / recent_n
+        recent_write = self.recent_counts.get("write", 0) / recent_n
         return {
             "queries": self.total,
             "point_lookup_ratio": self.point / n,
@@ -241,6 +274,8 @@ class WorkloadModel:
             setattr(model, key, data.get(key, 0))
         model.latencies = data.get("latencies", [])
         model.recent = data.get("recent", [])
+        for p in model.recent:
+            model.recent_counts[p] = model.recent_counts.get(p, 0) + 1
         model.fingerprints = data.get("fingerprints", {})
         model.plan_counts = data.get("plan_counts", {})
         model.plan_latency = data.get("plan_latency", {})
@@ -415,11 +450,14 @@ class AdaptiveEngine:
         self.plan_cache[fp] = plan
         return plan, tuple(candidates), False
 
-    def state_dict(self) -> dict[str, Any]:
+    def state_dict(self, max_telemetry: int = 5000) -> dict[str, Any]:
         return {
             "epoch": self.epoch,
             "plan_cache": self.plan_cache,
-            "telemetry": [asdict(t) for t in self.telemetry[-5000:]],
+            "telemetry": [
+                t.to_dict() if hasattr(t, "to_dict") else asdict(t)
+                for t in self.telemetry[-max_telemetry:]
+            ],
             "proposals": self.proposals[-500:],
             "indexes": sorted(self.indexes),
             "layout": self.layout,
@@ -800,12 +838,17 @@ class AdaptiveEngine:
 
 
 class SableDB:
+    _columns_cache: dict[str, list[str]] = {}
+
     def __init__(self, path: str = ":memory:", epoch_size: int = 100):
         self.path = path
         self.conn = sqlite3.connect(path)
         self.conn.row_factory = sqlite3.Row
         self.conn.execute("PRAGMA journal_mode=WAL")
         self.conn.execute("PRAGMA synchronous=NORMAL")
+        self.conn.execute("PRAGMA temp_store=MEMORY")
+        self.conn.execute("PRAGMA cache_size=-64000")
+        self.conn.execute("PRAGMA busy_timeout=10000")
         self.conn.execute(
             "CREATE TABLE IF NOT EXISTS sable_records (id INTEGER PRIMARY KEY, key TEXT UNIQUE, value TEXT, created_at REAL)"
         )
@@ -813,6 +856,7 @@ class SableDB:
             "CREATE TABLE IF NOT EXISTS _sable_state (state_key TEXT PRIMARY KEY, state_json TEXT NOT NULL, updated_at REAL NOT NULL)"
         )
         self.conn.commit()
+        self._plan_cache: dict[tuple[str, frozenset[str]], tuple[str, ...]] = {}
         self.adaptive = AdaptiveEngine(self.conn, epoch_size)
         if self._has_index("idx_sable_key"):
             self.adaptive.indexes.add("idx_sable_key")
@@ -845,7 +889,9 @@ class SableDB:
         if not force and self.adaptive.model.total % self.adaptive.epoch_size != 0:
             return
         payload = json.dumps(
-            self.adaptive.state_dict(), default=str, separators=(",", ":")
+            self.adaptive.state_dict(max_telemetry=5000 if force else 500),
+            default=str,
+            separators=(",", ":"),
         )
         self.conn.execute(
             "INSERT INTO _sable_state(state_key,state_json,updated_at) VALUES('adaptive',?,?) "
@@ -856,6 +902,9 @@ class SableDB:
 
     @staticmethod
     def _extract_columns(sql: str) -> list[str]:
+        cached = SableDB._columns_cache.get(sql)
+        if cached is not None:
+            return list(cached)
         low = sql.strip()
         if not low.lower().startswith("select"):
             return []
@@ -875,7 +924,10 @@ class SableDB:
                 filtered = [t.split(".")[-1].lower() for t in tokens if t.lower() not in ("distinct", "count", "sum", "avg", "min", "max")]
                 if filtered:
                     cols.append(filtered[-1])
-        return cols
+        if len(SableDB._columns_cache) > 2048:
+            SableDB._columns_cache.clear()
+        SableDB._columns_cache[sql] = cols
+        return list(cols)
 
     @staticmethod
     def _apply_plan_hint(sql: str, plan: str, indexes: set[str]) -> str:
@@ -894,13 +946,21 @@ class SableDB:
     def _sqlite_plan(self, sql: str, params: tuple[Any, ...]) -> tuple[str, ...]:
         if not sql.lstrip().lower().startswith(("select", "with", "pragma")):
             return ()
+        cache_key = (sql, frozenset(self.adaptive.indexes))
+        cached = self._plan_cache.get(cache_key)
+        if cached is not None:
+            return cached
         try:
-            return tuple(
+            plan = tuple(
                 str(row[3])
                 for row in self.conn.execute(
                     "EXPLAIN QUERY PLAN " + sql, params
                 ).fetchall()
             )
+            if len(self._plan_cache) > 2048:
+                self._plan_cache.clear()
+            self._plan_cache[cache_key] = plan
+            return plan
         except sqlite3.Error:
             return ()
 
@@ -967,7 +1027,7 @@ class SableDB:
                 self.adaptive.epoch,
                 operation,
                 cache_hit,
-                len(str(rows).encode()),
+                (len(rows) * 64 if rows else 0),
                 0,
                 elapsed,
                 candidates,
@@ -1086,7 +1146,10 @@ class SableDB:
     def export_telemetry(self, path: str):
         self._persist_state(force=True)
         Path(path).write_text(
-            "\n".join(json.dumps(asdict(t)) for t in self.adaptive.telemetry)
+            "\n".join(
+                json.dumps(t.to_dict() if hasattr(t, "to_dict") else asdict(t))
+                for t in self.adaptive.telemetry
+            )
             + ("\n" if self.adaptive.telemetry else "")
         )
 
